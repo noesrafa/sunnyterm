@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use winit::keyboard::ModifiersState;
 use winit::window::Window;
@@ -7,6 +8,7 @@ use winit::window::Window;
 use crate::config::Config;
 use crate::input::keyboard;
 use crate::pane::Pane;
+use crate::state::{AppState, TileState};
 use crate::renderer::atlas::GlyphAtlas;
 use crate::renderer::draw_helpers::DrawBatch;
 use crate::renderer::gpu::GpuContext;
@@ -45,6 +47,9 @@ pub struct App {
     texture_bind_group: wgpu::BindGroup,
 
     window: Arc<Window>,
+
+    state_dirty: bool,
+    last_save: Instant,
 }
 
 #[repr(C)]
@@ -72,8 +77,6 @@ pub enum AppAction {
 impl App {
     pub async fn new(window: Arc<Window>, config: Config) -> Self {
         let gpu = GpuContext::new(window.clone()).await;
-        let theme = Theme::catppuccin_mocha();
-
         let size = window.inner_size();
         let scale_factor = window.scale_factor() as f32;
 
@@ -84,22 +87,80 @@ impl App {
             scale_factor,
         );
 
-        // Create first tile at full window size, centered
-        let mut canvas = Canvas::new();
+        // Load saved state or create default
+        let saved = AppState::load();
         let bar_h = TITLE_BAR_HEIGHT * scale_factor;
-        let tw = 800.0 * scale_factor;
-        let th = 800.0 * scale_factor;
-        let tx = (size.width as f32 - tw) / 2.0;
-        let ty = (size.height as f32 - th - bar_h) / 2.0;
-        let tile_id = canvas.spawn(tx, ty, tw, th);
-
         let padding = config.appearance.padding as f32 * scale_factor;
-        let cols = ((tw - padding * 2.0) / atlas.cell_width).max(1.0) as usize;
-        let rows = ((th - bar_h - padding * 2.0) / atlas.cell_height).max(1.0) as usize;
-
-        let pane = Pane::new(&config.terminal.shell, cols, rows, config.terminal.cursor_blink);
+        let mut canvas = Canvas::new();
         let mut panes = HashMap::new();
-        panes.insert(tile_id, pane);
+
+        let (initial_zoom, initial_pan_x, initial_pan_y, is_dark_init);
+
+        if !saved.tiles.is_empty() {
+            // Restore saved tiles
+            for ts in saved.tiles {
+                let tile_id = canvas.spawn_named(ts.x, ts.y, ts.w, ts.h, ts.name.clone());
+                let cols = ((ts.w - padding * 2.0) / atlas.cell_width).max(1.0) as usize;
+                let rows = ((ts.h - bar_h - padding * 2.0) / atlas.cell_height).max(1.0) as usize;
+                let mut pane = Pane::new(&config.terminal.shell, cols, rows, config.terminal.cursor_blink);
+
+                // Restore previous session: push saved scrollback + visible
+                // grid into scrollback so old content appears above the new shell
+                {
+                    use crate::terminal::cell::Cell;
+
+                    let mut history = ts.scrollback;
+                    // Add non-empty grid lines to history
+                    let mut last_non_empty = 0;
+                    for (i, row) in ts.grid_cells.iter().enumerate() {
+                        if row.iter().any(|c| c.c != ' ') {
+                            last_non_empty = i + 1;
+                        }
+                    }
+                    history.extend(ts.grid_cells.into_iter().take(last_non_empty));
+
+                    if !history.is_empty() {
+                        // Add a separator line between old session and new
+                        let sep_cols = pane.grid.cols;
+                        let sep_line: Vec<Cell> = (0..sep_cols)
+                            .map(|i| Cell { c: if i < sep_cols { '─' } else { ' ' }, ..Cell::default() })
+                            .collect();
+                        history.push(sep_line);
+
+                        pane.grid.scrollback.restore(history);
+                        pane.grid.dirty = true;
+                    }
+                }
+
+                panes.insert(tile_id, pane);
+            }
+            initial_zoom = saved.canvas_zoom;
+            initial_pan_x = saved.canvas_pan.0;
+            initial_pan_y = saved.canvas_pan.1;
+            is_dark_init = saved.is_dark;
+        } else {
+            // First launch: create default tile
+            let tw = 800.0 * scale_factor;
+            let th = 800.0 * scale_factor;
+            let tx = (size.width as f32 - tw) / 2.0;
+            let ty = (size.height as f32 - th - bar_h) / 2.0;
+            let tile_id = canvas.spawn(tx, ty, tw, th);
+            let cols = ((tw - padding * 2.0) / atlas.cell_width).max(1.0) as usize;
+            let rows = ((th - bar_h - padding * 2.0) / atlas.cell_height).max(1.0) as usize;
+            let pane = Pane::new(&config.terminal.shell, cols, rows, config.terminal.cursor_blink);
+            panes.insert(tile_id, pane);
+
+            initial_zoom = 1.0;
+            let view_w = size.width as f32;
+            let view_h = size.height as f32;
+            let tile_center_x = tx + tw / 2.0;
+            let tile_center_y = ty + (th + bar_h) / 2.0;
+            initial_pan_x = tile_center_x - view_w / 2.0;
+            initial_pan_y = tile_center_y - view_h / 2.0;
+            is_dark_init = true;
+        }
+
+        let theme = if is_dark_init { Theme::catppuccin_mocha() } else { Theme::light() };
 
         // Shaders & pipelines
         let text_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -107,14 +168,8 @@ impl App {
             source: wgpu::ShaderSource::Wgsl(include_str!("../assets/shaders/text.wgsl").into()),
         });
 
-        let initial_zoom = 1.0;
-        // Center the tile in the viewport: pan so the tile center maps to screen center
         let view_w = size.width as f32 / initial_zoom;
         let view_h = size.height as f32 / initial_zoom;
-        let tile_center_x = tx + tw / 2.0;
-        let tile_center_y = ty + (th + bar_h) / 2.0;
-        let initial_pan_x = tile_center_x - view_w / 2.0;
-        let initial_pan_y = tile_center_y - view_h / 2.0;
         let uniforms = Uniforms { projection: ortho_pan(view_w, view_h, initial_pan_x, initial_pan_y) };
         let uniform_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("uniforms"),
@@ -199,10 +254,12 @@ impl App {
             panning: None,
             renaming: false,
             rename_buffer: String::new(),
-            is_dark: true,
+            is_dark: is_dark_init,
             bg_pipeline, fg_pipeline, rounded_pipeline,
             uniform_bind_group, uniform_buffer, texture_bind_group,
             window,
+            state_dirty: false,
+            last_save: Instant::now(),
         }
     }
 
@@ -227,6 +284,7 @@ impl App {
 
         let pane = Pane::new(&self.config.terminal.shell, cols, rows, self.config.terminal.cursor_blink);
         self.panes.insert(tile_id, pane);
+        self.mark_dirty();
     }
 
     /// Spawn a new tile centered at a canvas position.
@@ -244,14 +302,19 @@ impl App {
 
         let pane = Pane::new(&self.config.terminal.shell, cols, rows, self.config.terminal.cursor_blink);
         self.panes.insert(tile_id, pane);
+        self.mark_dirty();
     }
 
     pub fn close_focused(&mut self) {
-        if self.panes.len() <= 1 { return; }
         if let Some(id) = self.canvas.focused_id() {
-            self.canvas.remove(id);
-            self.panes.remove(&id);
+            self.close_tile(id);
         }
+    }
+
+    pub fn close_tile(&mut self, id: usize) {
+        self.canvas.remove(id);
+        self.panes.remove(&id);
+        self.mark_dirty();
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -278,6 +341,7 @@ impl App {
         } else {
             Theme::light()
         };
+        self.mark_dirty();
     }
 
     pub fn zoom_at(&mut self, screen_x: f32, screen_y: f32, delta: f32) {
@@ -299,6 +363,7 @@ impl App {
         self.atlas.set_zoom(new_zoom, &self.gpu.queue);
 
         self.update_projection();
+        self.mark_dirty();
     }
 
     pub fn zoom_in(&mut self) {
@@ -374,12 +439,15 @@ impl App {
             return;
         }
         let (cx, cy) = self.screen_to_canvas(x, y);
-        if let Some((id, _in_title, in_resize)) = self.canvas.hit_test(cx, cy, self.scale_factor) {
+        if let Some((id, _in_title, in_resize, in_close)) = self.canvas.hit_test(cx, cy, self.scale_factor) {
+            if in_close {
+                self.close_tile(id);
+                return;
+            }
             self.canvas.focus(id);
             if in_resize {
                 self.canvas.start_drag(id, DragMode::Resize, cx, cy);
             } else {
-                // Any click on tile (title bar or content): move the tile
                 self.canvas.start_drag(id, DragMode::Move, cx, cy);
             }
         } else {
@@ -415,6 +483,8 @@ impl App {
     }
 
     pub fn mouse_up(&mut self) {
+        let had_drag = self.canvas.drag.is_some();
+        let had_pan = self.panning.is_some();
         self.panning = None;
         if let Some(drag) = &self.canvas.drag {
             if drag.mode == DragMode::Resize {
@@ -423,9 +493,15 @@ impl App {
             }
         }
         self.canvas.end_drag();
+        if had_drag || had_pan {
+            self.mark_dirty();
+        }
     }
 
     pub fn middle_mouse_up(&mut self) {
+        if self.panning.is_some() {
+            self.mark_dirty();
+        }
         self.panning = None;
     }
 
@@ -460,12 +536,30 @@ impl App {
                     let name = self.rename_buffer.clone();
                     self.canvas.rename_focused(name);
                     self.renaming = false;
+                    self.mark_dirty();
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.renaming = false;
                 }
                 Key::Named(NamedKey::Backspace) => {
-                    self.rename_buffer.pop();
+                    if self.modifiers.super_key() {
+                        self.rename_buffer.clear();
+                    } else if self.modifiers.alt_key() || self.modifiers.control_key() {
+                        // Alt/Ctrl+Backspace: delete word backward
+                        let trimmed = self.rename_buffer.trim_end();
+                        let word_start = trimmed.rfind(|c: char| c == ' ' || c == '-' || c == '_')
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
+                        self.rename_buffer.truncate(word_start);
+                    } else {
+                        self.rename_buffer.pop();
+                    }
+                }
+                Key::Named(NamedKey::Space) => {
+                    self.rename_buffer.push(' ');
+                }
+                Key::Named(NamedKey::Delete) => {
+                    // Delete forward: remove char after cursor (simplified: ignore in rename)
                 }
                 Key::Character(c) if !self.modifiers.super_key() => {
                     self.rename_buffer.push_str(c.as_str());
@@ -487,11 +581,113 @@ impl App {
             }
         }
 
-        if let Some(bytes) = keyboard::key_to_pty_bytes(event, self.modifiers) {
-            if let Some(id) = self.canvas.focused_id() {
-                if let Some(pane) = self.panes.get_mut(&id) {
-                    let _ = pane.pty.write(&bytes);
-                    pane.cursor_renderer.reset_blink();
+        // Alternate screen mode: bypass input buffer, send directly to PTY
+        let is_alternate = self.canvas.focused_id()
+            .and_then(|id| self.panes.get(&id))
+            .map(|p| p.grid.alternate_screen)
+            .unwrap_or(false);
+
+        if is_alternate {
+            if let Some(bytes) = keyboard::key_to_pty_bytes(event, self.modifiers) {
+                if let Some(id) = self.canvas.focused_id() {
+                    if let Some(pane) = self.panes.get_mut(&id) {
+                        let _ = pane.pty.write(&bytes);
+                        pane.cursor_renderer.reset_blink();
+                    }
+                }
+            }
+            return AppAction::None;
+        }
+
+        // Input buffer mode: capture keys into the pane's input buffer
+        let alt = self.modifiers.alt_key();
+        let ctrl = self.modifiers.control_key();
+        let super_key = self.modifiers.super_key();
+
+        if let Some(id) = self.canvas.focused_id() {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                match &event.logical_key {
+                    Key::Named(NamedKey::Enter) => {
+                        pane.submit_input();
+                        pane.cursor_renderer.reset_blink();
+                        pane.grid.scroll_offset = 0;
+                    }
+                    Key::Named(NamedKey::Space) => {
+                        pane.input_insert(" ");
+                        pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Named(NamedKey::Tab) => {
+                        pane.input_insert("    ");
+                        pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Named(NamedKey::Delete) => {
+                        return AppAction::ClosePane;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        if super_key {
+                            pane.input_buffer.drain(..pane.input_cursor);
+                            pane.input_cursor = 0;
+                        } else if alt || ctrl {
+                            pane.input_delete_word_back();
+                        } else {
+                            pane.input_backspace();
+                        }
+                        pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        if alt || super_key {
+                            pane.input_move_word_left();
+                        } else {
+                            pane.input_move_left();
+                        }
+                        pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        if alt || super_key {
+                            pane.input_move_word_right();
+                        } else {
+                            pane.input_move_right();
+                        }
+                        pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Named(NamedKey::Home) => {
+                        pane.input_cursor = 0;
+                        pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Named(NamedKey::End) => {
+                        pane.input_cursor = pane.input_buffer.len();
+                        pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => {
+                        // TODO: command history
+                    }
+                    Key::Character(c) if ctrl => {
+                        match c.as_str() {
+                            "c" => pane.input_interrupt(),
+                            "d" => pane.input_eof(),
+                            "l" => {
+                                let _ = pane.pty.write(b"\x0c");
+                            }
+                            "u" => {
+                                pane.input_buffer.drain(..pane.input_cursor);
+                                pane.input_cursor = 0;
+                            }
+                            "k" => {
+                                pane.input_buffer.truncate(pane.input_cursor);
+                            }
+                            "w" => pane.input_delete_word_back(),
+                            "a" => pane.input_cursor = 0,
+                            "e" => pane.input_cursor = pane.input_buffer.len(),
+                            _ => {}
+                        }
+                        pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Character(c) if !super_key => {
+                        pane.input_insert(c.as_str());
+                        pane.cursor_renderer.reset_blink();
+                        pane.grid.scroll_offset = 0;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -499,12 +695,21 @@ impl App {
     }
 
     pub fn read_all_ptys(&mut self) {
+        let mut had_data = false;
         for pane in self.panes.values_mut() {
+            let before = pane.grid.dirty;
             pane.read_pty();
+            if pane.grid.dirty && !before {
+                had_data = true;
+            }
+        }
+        if had_data {
+            self.mark_dirty();
         }
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        self.flush_state_if_needed();
         let s = self.scale_factor;
         let padding = self.config.appearance.padding as f32 * s;
         let bar_h = TITLE_BAR_HEIGHT * s;
@@ -680,6 +885,49 @@ impl App {
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         Ok(())
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.state_dirty = true;
+    }
+
+    /// Flush state to disk if dirty and at least 2 seconds since last save.
+    pub fn flush_state_if_needed(&mut self) {
+        if self.state_dirty && self.last_save.elapsed().as_secs() >= 2 {
+            self.save_state();
+            self.state_dirty = false;
+            self.last_save = Instant::now();
+        }
+    }
+
+    pub fn save_state(&self) {
+        let tiles: Vec<TileState> = self.canvas.tiles.iter().map(|t| {
+            let (scrollback, grid_cells, cursor_row, cursor_col) =
+                if let Some(pane) = self.panes.get(&t.id) {
+                    let sb = pane.grid.scrollback.lines();
+                    // Keep last 1000 scrollback lines to limit state file size
+                    let sb_start = sb.len().saturating_sub(1000);
+                    (
+                        sb[sb_start..].to_vec(),
+                        pane.grid.cells.clone(),
+                        pane.grid.cursor_row,
+                        pane.grid.cursor_col,
+                    )
+                } else {
+                    (Vec::new(), Vec::new(), 0, 0)
+                };
+            TileState {
+                x: t.x, y: t.y, w: t.w, h: t.h, name: t.name.clone(),
+                scrollback, grid_cells, cursor_row, cursor_col,
+            }
+        }).collect();
+        let state = AppState {
+            canvas_zoom: self.canvas_zoom,
+            canvas_pan: self.canvas_pan,
+            is_dark: self.is_dark,
+            tiles,
+        };
+        state.save();
     }
 
     pub fn request_redraw(&self) {

@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::ui::theme::Color;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CellAttrs {
     pub fg: CellColor,
     pub bg: CellColor,
@@ -10,7 +12,7 @@ pub struct CellAttrs {
     pub inverse: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum CellColor {
     Default,
     Indexed(u8),
@@ -44,7 +46,7 @@ impl CellColor {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cell {
     pub c: char,
     pub attrs: CellAttrs,

@@ -28,4 +28,17 @@ impl ScrollBuffer {
     pub fn get(&self, index: usize) -> Option<&Vec<Cell>> {
         self.lines.get(index)
     }
+
+    pub fn lines(&self) -> &[Vec<Cell>] {
+        &self.lines
+    }
+
+    pub fn restore(&mut self, lines: Vec<Vec<Cell>>) {
+        self.lines = lines;
+        // Trim to max if needed
+        if self.lines.len() > self.max_lines {
+            let excess = self.lines.len() - self.max_lines;
+            self.lines.drain(..excess);
+        }
+    }
 }

@@ -5,11 +5,13 @@ mod config;
 mod input;
 mod pane;
 mod renderer;
+mod state;
 mod terminal;
 mod ui;
 mod ssh;
 
 use std::sync::Arc;
+use std::fs::File;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -103,6 +105,7 @@ impl ApplicationHandler for LumeApp {
 
         match event {
             WindowEvent::CloseRequested => {
+                app.save_state();
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
@@ -132,7 +135,7 @@ impl ApplicationHandler for LumeApp {
                         } else if dt < 400 && dist < 10.0 {
                             let (cx, cy) = app.screen_to_canvas(px, py);
                             match app.canvas.hit_test(cx, cy, app.scale_factor) {
-                                Some((_, true, _)) => app.start_rename(),
+                                Some((_, true, _, _)) => app.start_rename(),
                                 None => app.spawn_tile_at(cx, cy),
                                 _ => {}
                             }
@@ -145,10 +148,10 @@ impl ApplicationHandler for LumeApp {
                     (winit::event::MouseButton::Left, winit::event::ElementState::Released) => {
                         app.mouse_up();
                     }
-                    (winit::event::MouseButton::Middle, winit::event::ElementState::Pressed) => {
+                    (winit::event::MouseButton::Middle | winit::event::MouseButton::Right, winit::event::ElementState::Pressed) => {
                         app.middle_mouse_down(px, py);
                     }
-                    (winit::event::MouseButton::Middle, winit::event::ElementState::Released) => {
+                    (winit::event::MouseButton::Middle | winit::event::MouseButton::Right, winit::event::ElementState::Released) => {
                         app.middle_mouse_up();
                     }
                     _ => {}
@@ -175,7 +178,7 @@ impl ApplicationHandler for LumeApp {
                 match app.handle_key_event(&event) {
                     AppAction::SpawnTile => app.spawn_tile(),
                     AppAction::ClosePane => app.close_focused(),
-                    AppAction::Quit => event_loop.exit(),
+                    AppAction::Quit => { app.save_state(); event_loop.exit(); }
                     AppAction::None => {}
                 }
             }
@@ -199,6 +202,19 @@ impl ApplicationHandler for LumeApp {
 
 fn main() {
     env_logger::init();
+
+    // Single instance lock
+    let lock_path = crate::state::AppState::data_dir().join("sunnyterm.lock");
+    let lock_file = File::create(&lock_path).expect("Failed to create lock file");
+    use std::os::unix::io::AsRawFd;
+    let fd = lock_file.as_raw_fd();
+    let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    if ret != 0 {
+        eprintln!("[sunnyterm] Another instance is already running.");
+        std::process::exit(0);
+    }
+    // Keep lock_file alive for the duration of the process
+    let _lock = lock_file;
 
     let config = Config::load();
 

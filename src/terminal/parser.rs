@@ -55,13 +55,31 @@ impl<'a> vte::Perform for Performer<'a> {
     fn csi_dispatch(
         &mut self,
         params: &vte::Params,
-        _intermediates: &[u8],
+        intermediates: &[u8],
         _ignore: bool,
         action: char,
     ) {
         let params: Vec<u16> = params.iter().flat_map(|p| p.iter().copied()).collect();
         let arg0 = params.first().copied().unwrap_or(0);
         let arg1 = params.get(1).copied().unwrap_or(0);
+
+        // Private mode set/reset (CSI ? Ps h / CSI ? Ps l)
+        let is_private = intermediates.contains(&b'?');
+        if is_private {
+            if action == 'h' || action == 'l' {
+                let enable = action == 'h';
+                for &p in &params {
+                    match p {
+                        47 | 1047 | 1049 => {
+                            self.grid.alternate_screen = enable;
+                        }
+                        _ => {}
+                    }
+                }
+                self.grid.dirty = true;
+            }
+            return;
+        }
 
         match action {
             // Cursor Up

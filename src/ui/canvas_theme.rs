@@ -13,6 +13,8 @@ pub struct CanvasTheme {
     pub dot_dim_alpha: f32,
     pub dot_bright_alpha: f32,
     pub dot_rgb: f32,
+    pub input_bar_bg: Color,
+    pub input_bar_border: Color,
 }
 
 impl CanvasTheme {
@@ -30,6 +32,8 @@ impl CanvasTheme {
             dot_dim_alpha: 0.15,
             dot_bright_alpha: 0.35,
             dot_rgb: 1.0,
+            input_bar_bg: Color::from_hex(0x232629),
+            input_bar_border: Color::from_hex(0x3A4048),
         }
     }
 
@@ -47,6 +51,8 @@ impl CanvasTheme {
             dot_dim_alpha: 0.25,
             dot_bright_alpha: 0.50,
             dot_rgb: 0.0,
+            input_bar_bg: Color::from_hex(0xEAEAEA),
+            input_bar_border: Color::from_hex(0xC8C0B6),
         }
     }
 }

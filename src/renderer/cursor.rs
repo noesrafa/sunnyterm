@@ -34,6 +34,10 @@ impl CursorRenderer {
         self.last_toggle = Instant::now();
     }
 
+    pub fn blink_on(&self) -> bool {
+        self.blink_on
+    }
+
     pub fn build_vertices(
         &self,
         cursor_row: usize,
@@ -52,16 +56,17 @@ impl CursorRenderer {
         let y = padding + cursor_row as f32 * cell_height;
         let color = theme.cursor.to_array();
 
-        let beam_width = (cell_width * 0.12).max(2.0);
+        let beam_width = (cell_width * 0.4).max(4.0);
+        let reduced_height = cell_height * 0.75;
         let (w, h) = match cursor_style {
-            "beam" => (beam_width, cell_height),
+            "beam" => (beam_width, reduced_height),
             "underline" => (cell_width, beam_width),
-            _ => (cell_width, cell_height), // block
+            _ => (cell_width, reduced_height), // block
         };
 
         let oy = match cursor_style {
             "underline" => cell_height - beam_width,
-            _ => 0.0,
+            _ => cell_height - h,
         };
 
         let vertices = vec![

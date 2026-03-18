@@ -17,6 +17,8 @@ pub struct Grid {
     pub scrollback: ScrollBuffer,
     /// How many lines we're scrolled back (0 = at bottom / live)
     pub scroll_offset: usize,
+    /// True when a program has activated the alternate screen (vim, htop, etc.)
+    pub alternate_screen: bool,
 }
 
 impl Grid {
@@ -34,6 +36,7 @@ impl Grid {
             dirty: true,
             scrollback: ScrollBuffer::new(10_000),
             scroll_offset: 0,
+            alternate_screen: false,
         }
     }
 

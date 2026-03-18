@@ -57,6 +57,14 @@ impl Canvas {
         id
     }
 
+    pub fn spawn_named(&mut self, x: f32, y: f32, w: f32, h: f32, name: String) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.tiles.push(Tile { id, x, y, w, h, name });
+        self.focus_order.push(id);
+        id
+    }
+
     pub fn remove(&mut self, id: usize) {
         self.tiles.retain(|t| t.id != id);
         self.focus_order.retain(|&i| i != id);
@@ -86,9 +94,13 @@ impl Canvas {
     /// Hit test the topmost tile at (x,y).
     /// The tile's total rect is: x, y .. x+w, y+bar_h+h
     /// (title bar at top, content below)
-    pub fn hit_test(&self, x: f32, y: f32, scale: f32) -> Option<(usize, bool, bool)> {
+    /// Hit test the topmost tile at (x,y).
+    /// Returns (tile_id, in_title, in_resize, in_close).
+    pub fn hit_test(&self, x: f32, y: f32, scale: f32) -> Option<(usize, bool, bool, bool)> {
         let bar_h = TITLE_BAR_HEIGHT * scale;
         let handle = RESIZE_HANDLE * scale;
+        let close_size = 28.0 * scale;
+        let close_margin = 2.0 * scale;
 
         for &id in self.focus_order.iter().rev() {
             if let Some(tile) = self.tile(id) {
@@ -96,7 +108,13 @@ impl Canvas {
                 if x >= tile.x && x < tile.x + tile.w && y >= tile.y && y < tile.y + total_h {
                     let in_title = y < tile.y + bar_h;
                     let in_resize = x >= tile.x + tile.w - handle && y >= tile.y + total_h - handle;
-                    return Some((id, in_title, in_resize));
+                    // Close button: top-right corner of title bar
+                    let close_x = tile.x + tile.w - close_size - close_margin;
+                    let close_y = tile.y + (bar_h - close_size) / 2.0;
+                    let in_close = in_title
+                        && x >= close_x && x < close_x + close_size
+                        && y >= close_y && y < close_y + close_size;
+                    return Some((id, in_title, in_resize, in_close));
                 }
             }
         }

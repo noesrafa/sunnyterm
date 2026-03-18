@@ -68,6 +68,20 @@ impl TextRenderer {
         padding: f32,
         queue: &wgpu::Queue,
     ) {
+        self.build_vertices_range(grid, atlas, theme, padding, queue, 0..grid.rows, 0.0);
+    }
+
+    /// Render a range of grid rows, with a y_offset applied to all vertices.
+    pub fn build_vertices_range(
+        &mut self,
+        grid: &Grid,
+        atlas: &mut GlyphAtlas,
+        theme: &Theme,
+        padding: f32,
+        queue: &wgpu::Queue,
+        row_range: std::ops::Range<usize>,
+        y_offset: f32,
+    ) {
         self.bg_vertices.clear();
         self.bg_indices.clear();
         self.fg_vertices.clear();
@@ -77,12 +91,13 @@ impl TextRenderer {
         let cell_h = atlas.cell_height;
 
         let default_cell = crate::terminal::cell::Cell::default();
-        for row in 0..grid.rows {
+        for (local_row, row) in row_range.enumerate() {
+            if row >= grid.rows { break; }
             let line = grid.display_line(row);
             for col in 0..grid.cols {
                 let cell = if col < line.len() { &line[col] } else { &default_cell };
                 let x = padding + col as f32 * cell_w;
-                let y = padding + row as f32 * cell_h;
+                let y = y_offset + padding + local_row as f32 * cell_h;
 
                 let (fg_color, bg_color) = if cell.attrs.inverse {
                     (
