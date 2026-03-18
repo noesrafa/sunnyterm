@@ -13,6 +13,9 @@ pub struct Pane {
     pub cursor_renderer: CursorRenderer,
     pub input_buffer: String,
     pub input_cursor: usize, // byte offset in input_buffer
+    /// True when a child process is running in the foreground (e.g. claude, node).
+    /// Input bypasses the buffer and goes directly to the PTY.
+    pub passthrough: bool,
 }
 
 impl Pane {
@@ -26,6 +29,7 @@ impl Pane {
             cursor_renderer: CursorRenderer::new(cursor_blink),
             input_buffer: String::new(),
             input_cursor: 0,
+            passthrough: false,
         }
     }
 
@@ -34,6 +38,7 @@ impl Pane {
         if !data.is_empty() {
             self.parser.process(&data, &mut self.grid);
         }
+        self.passthrough = !self.grid.alternate_screen && self.pty.has_foreground_child();
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {

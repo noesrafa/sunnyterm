@@ -115,9 +115,10 @@ pub fn build_tile_batch(
 
     let ox = tx;
     let is_alternate = pane.grid.alternate_screen;
+    let full_grid = is_alternate || pane.passthrough;
 
-    if is_alternate {
-        // ── Alternate screen mode: full grid, no input bar ──
+    if full_grid {
+        // ── Full grid mode (alternate screen or passthrough): no input bar ──
         let bg_base = batch.bg_verts.len() as u32;
         for v in &pane.text_renderer.bg_vertices {
             batch.bg_verts.push(TextVertex {
@@ -134,8 +135,8 @@ pub fn build_tile_batch(
         }
         for idx in &pane.text_renderer.fg_indices { batch.fg_indices.push(idx + fg_base); }
 
-        // Cursor in alternate mode
-        if is_focused {
+        // Cursor only in alternate screen mode (not passthrough)
+        if is_focused && is_alternate {
             let (cverts, cidxs) = pane.cursor_renderer.build_vertices(
                 pane.grid.cursor_row, pane.grid.cursor_col,
                 cell_w, cell_h, padding, cursor_style, theme,

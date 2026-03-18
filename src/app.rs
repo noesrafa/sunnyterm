@@ -581,13 +581,13 @@ impl App {
             }
         }
 
-        // Alternate screen mode: bypass input buffer, send directly to PTY
-        let is_alternate = self.canvas.focused_id()
+        // Alternate screen or passthrough mode: bypass input buffer, send directly to PTY
+        let is_passthrough = self.canvas.focused_id()
             .and_then(|id| self.panes.get(&id))
-            .map(|p| p.grid.alternate_screen)
+            .map(|p| p.grid.alternate_screen || p.passthrough)
             .unwrap_or(false);
 
-        if is_alternate {
+        if is_passthrough {
             if let Some(bytes) = keyboard::key_to_pty_bytes(event, self.modifiers) {
                 if let Some(id) = self.canvas.focused_id() {
                     if let Some(pane) = self.panes.get_mut(&id) {
