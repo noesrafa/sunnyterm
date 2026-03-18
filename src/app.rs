@@ -102,36 +102,7 @@ impl App {
                 let tile_id = canvas.spawn_named(ts.x, ts.y, ts.w, ts.h, ts.name.clone());
                 let cols = ((ts.w - padding * 2.0) / atlas.cell_width).max(1.0) as usize;
                 let rows = ((ts.h - bar_h - padding * 2.0) / atlas.cell_height).max(1.0) as usize;
-                let mut pane = Pane::new(&config.terminal.shell, cols, rows, config.terminal.cursor_blink);
-
-                // Restore previous session: push saved scrollback + visible
-                // grid into scrollback so old content appears above the new shell
-                {
-                    use crate::terminal::cell::Cell;
-
-                    let mut history = ts.scrollback;
-                    // Add non-empty grid lines to history
-                    let mut last_non_empty = 0;
-                    for (i, row) in ts.grid_cells.iter().enumerate() {
-                        if row.iter().any(|c| c.c != ' ') {
-                            last_non_empty = i + 1;
-                        }
-                    }
-                    history.extend(ts.grid_cells.into_iter().take(last_non_empty));
-
-                    if !history.is_empty() {
-                        // Add a separator line between old session and new
-                        let sep_cols = pane.grid.cols;
-                        let sep_line: Vec<Cell> = (0..sep_cols)
-                            .map(|i| Cell { c: if i < sep_cols { '─' } else { ' ' }, ..Cell::default() })
-                            .collect();
-                        history.push(sep_line);
-
-                        pane.grid.scrollback.restore(history);
-                        pane.grid.dirty = true;
-                    }
-                }
-
+                let pane = Pane::new(&config.terminal.shell, cols, rows, config.terminal.cursor_blink);
                 panes.insert(tile_id, pane);
             }
             initial_zoom = saved.canvas_zoom;
@@ -346,7 +317,13 @@ impl App {
 
     pub fn zoom_at(&mut self, screen_x: f32, screen_y: f32, delta: f32) {
         let old_zoom = self.canvas_zoom;
-        let new_zoom = (self.canvas_zoom + delta).clamp(0.3, 2.0);
+        // Snap to 10% increments
+        let target = self.canvas_zoom + delta;
+        let new_zoom = if delta > 0.0 {
+            (target * 10.0).ceil() / 10.0
+        } else {
+            (target * 10.0).floor() / 10.0
+        }.clamp(0.3, 2.0);
         if (new_zoom - old_zoom).abs() < 0.001 { return; }
 
         // Canvas point under cursor before zoom
@@ -902,23 +879,8 @@ impl App {
 
     pub fn save_state(&self) {
         let tiles: Vec<TileState> = self.canvas.tiles.iter().map(|t| {
-            let (scrollback, grid_cells, cursor_row, cursor_col) =
-                if let Some(pane) = self.panes.get(&t.id) {
-                    let sb = pane.grid.scrollback.lines();
-                    // Keep last 1000 scrollback lines to limit state file size
-                    let sb_start = sb.len().saturating_sub(1000);
-                    (
-                        sb[sb_start..].to_vec(),
-                        pane.grid.cells.clone(),
-                        pane.grid.cursor_row,
-                        pane.grid.cursor_col,
-                    )
-                } else {
-                    (Vec::new(), Vec::new(), 0, 0)
-                };
             TileState {
                 x: t.x, y: t.y, w: t.w, h: t.h, name: t.name.clone(),
-                scrollback, grid_cells, cursor_row, cursor_col,
             }
         }).collect();
         let state = AppState {
@@ -930,7 +892,103 @@ impl App {
         state.save();
     }
 
+    /// Given a canvas-space click position, find the URL under the cursor (if any).
+    pub fn url_at_canvas_pos(&self, cx: f32, cy: f32) -> Option<String> {
+        let s = self.scale_factor;
+        let bar_h = TITLE_BAR_HEIGHT * s;
+        let padding = self.config.appearance.padding as f32 * s;
+        let cell_w = self.atlas.cell_width;
+        let cell_h = self.atlas.cell_height;
+
+        // Find which tile was hit
+        let (id, in_title, _, _) = self.canvas.hit_test(cx, cy, s)?;
+        if in_title { return None; }
+
+        let tile = self.canvas.tile(id)?;
+        let pane = self.panes.get(&id)?;
+
+        let content_y = tile.y + bar_h;
+
+        // Determine the grid row/col from canvas position
+        let (grid_row, col);
+
+        let is_full_grid = pane.grid.alternate_screen || pane.passthrough;
+        if is_full_grid {
+            let rel_y = cy - content_y - padding;
+            let rel_x = cx - tile.x - padding;
+            if rel_y < 0.0 || rel_x < 0.0 { return None; }
+            grid_row = (rel_y / cell_h) as usize;
+            col = (rel_x / cell_w) as usize;
+        } else {
+            // Chat mode: output is bottom-anchored and clipped
+            let input_padding = 8.0 * s;
+            let input_bar_h = input_padding * 2.0 + cell_h;
+            let input_gap = 6.0 * s;
+            let output_area_h = tile.h - input_bar_h - input_gap;
+            let grid_content_h = padding + pane.grid.rows as f32 * cell_h;
+            let output_scroll = if grid_content_h > output_area_h {
+                grid_content_h - output_area_h
+            } else {
+                0.0
+            };
+            let output_oy = content_y - output_scroll;
+            let rel_y = cy - output_oy - padding;
+            let rel_x = cx - tile.x - padding;
+            if rel_y < 0.0 || rel_x < 0.0 { return None; }
+            // Check we're in the output area, not the input bar
+            if cy > content_y + output_area_h { return None; }
+            grid_row = (rel_y / cell_h) as usize;
+            col = (rel_x / cell_w) as usize;
+        }
+
+        if grid_row >= pane.grid.rows || col >= pane.grid.cols { return None; }
+
+        // Extract the text of the display line
+        let line = pane.grid.display_line(grid_row);
+        let line_text: String = line.iter().map(|c| c.c).collect();
+        let line_text = line_text.trim_end();
+
+        // Find URLs in the line and check if col falls within one
+        find_url_at_col(line_text, col)
+    }
+
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
+}
+
+/// Find a URL in `text` that spans over column `col`.
+fn find_url_at_col(text: &str, col: usize) -> Option<String> {
+    let prefixes = ["https://", "http://", "file://"];
+    let mut search_from = 0;
+    while search_from < text.len() {
+        // Find the earliest URL prefix
+        let mut earliest: Option<(usize, &str)> = None;
+        for pfx in &prefixes {
+            if let Some(pos) = text[search_from..].find(pfx) {
+                let abs_pos = search_from + pos;
+                if earliest.is_none() || abs_pos < earliest.unwrap().0 {
+                    earliest = Some((abs_pos, pfx));
+                }
+            }
+        }
+        let (start, _) = earliest?;
+
+        // Extend to the end of the URL (stop at whitespace or common delimiters)
+        let end = text[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '>' | '<' | '"' | '\'' | ')' | ']'))
+            .map(|i| start + i)
+            .unwrap_or(text.len());
+
+        // Check if col falls within this URL (using char positions)
+        let char_start = text[..start].chars().count();
+        let char_end = text[..end].chars().count();
+
+        if col >= char_start && col < char_end {
+            return Some(text[start..end].to_string());
+        }
+
+        search_from = end;
+    }
+    None
 }

@@ -1,3 +1,4 @@
+use crate::ui::palette;
 use crate::ui::theme::Color;
 
 pub struct CanvasTheme {
@@ -19,40 +20,42 @@ pub struct CanvasTheme {
 
 impl CanvasTheme {
     pub fn dark() -> Self {
+        use palette::dark::*;
         Self {
-            clear_color: wgpu::Color { r: 0.0024, g: 0.0024, b: 0.0024, a: 1.0 },
-            tile_bar: Color::from_hex(0x1B1D1F),
-            tile_border: Color::from_hex(0x353B40),
-            title_focused: Color::from_hex(0x888888),
-            title_unfocused: Color::from_hex(0x555555),
-            btn_bg: Color::from_hex(0x1B1D1F),
-            btn_border: Color::from_hex(0x353B40),
-            icon: Color::from_hex(0x888888),
-            label: Color::from_hex(0x555555),
-            dot_dim_alpha: 0.15,
-            dot_bright_alpha: 0.35,
-            dot_rgb: 1.0,
-            input_bar_bg: Color::from_hex(0x232629),
-            input_bar_border: Color::from_hex(0x3A4048),
+            clear_color: CANVAS_CLEAR,
+            tile_bar: Color::from_hex(BASE),
+            tile_border: Color::from_hex(OVERLAY),
+            title_focused: Color::from_hex(TEXT),
+            title_unfocused: Color::from_hex(TEXT_MUTED),
+            btn_bg: Color::from_hex(BASE),
+            btn_border: Color::from_hex(OVERLAY),
+            icon: Color::from_hex(TEXT),
+            label: Color::from_hex(TEXT_MUTED),
+            dot_dim_alpha: DOT_DIM_ALPHA,
+            dot_bright_alpha: DOT_BRIGHT_ALPHA,
+            dot_rgb: DOT_RGB,
+            input_bar_bg: Color::from_hex(SURFACE),
+            input_bar_border: Color::from_hex(SUBTLE),
         }
     }
 
     pub fn light() -> Self {
+        use palette::light::*;
         Self {
-            clear_color: wgpu::Color { r: 0.5647, g: 0.5457, b: 0.4452, a: 1.0 },
-            tile_bar: Color::from_hex(0xF5F5F5),
-            tile_border: Color::from_hex(0xD6CEC4),
-            title_focused: Color::from_hex(0x444444),
-            title_unfocused: Color::from_hex(0x999999),
-            btn_bg: Color::from_hex(0xF5F5F5),
-            btn_border: Color::from_hex(0xD6CEC4),
-            icon: Color::from_hex(0x555555),
-            label: Color::from_hex(0x888888),
-            dot_dim_alpha: 0.25,
-            dot_bright_alpha: 0.50,
-            dot_rgb: 0.0,
-            input_bar_bg: Color::from_hex(0xEAEAEA),
-            input_bar_border: Color::from_hex(0xC8C0B6),
+            clear_color: CANVAS_CLEAR,
+            tile_bar: Color::from_hex(BASE),
+            tile_border: Color::from_hex(OVERLAY),
+            title_focused: Color::from_hex(TEXT_DIM),
+            title_unfocused: Color::from_hex(TEXT_MUTED),
+            btn_bg: Color::from_hex(BUTTONS),
+            btn_border: Color::from_hex(OVERLAY),
+            icon: Color::from_hex(TEXT),
+            label: Color::from_hex(LABEL),
+            dot_dim_alpha: DOT_DIM_ALPHA,
+            dot_bright_alpha: DOT_BRIGHT_ALPHA,
+            dot_rgb: DOT_RGB,
+            input_bar_bg: Color::from_hex(SURFACE),
+            input_bar_border: Color::from_hex(SUBTLE),
         }
     }
 }

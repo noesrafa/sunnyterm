@@ -104,30 +104,34 @@ pub fn build_ui_batch(
         push_quad(&mut batch.bg_verts, &mut batch.bg_indices, cx + offset, cy - ray_w * 0.5, ray_len, ray_w, icon_color); // right
     }
 
-    // Zoom percentage label (above the pill)
+    // Zoom percentage label (above the pill) — fixed screen size via `z`
     let zoom_pct = format!("{}%", (zoom * 100.0) as u32);
-    let label_w = zoom_pct.len() as f32 * atlas.cell_width;
+    let char_w = atlas.cell_width * z;
+    let char_h = atlas.cell_height * z;
+    let label_w = zoom_pct.len() as f32 * char_w;
     let label_x = bx + (btn_w - label_w) / 2.0;
-    let label_y = by - atlas.cell_height - 6.0 * s * z;
+    let label_y = by - char_h - 6.0 * s * z;
     let label_color = canvas_theme.label.to_array();
     let mut lx = label_x;
     for c in zoom_pct.chars() {
         if c != ' ' {
-            let glyph = atlas.get_or_rasterize(c, false, false, gpu_queue);
+            let glyph = atlas.get_or_rasterize_ui(c, gpu_queue);
             if glyph.width > 0.0 && glyph.height > 0.0 {
-                let gx = lx + glyph.bearing_x;
-                let gy = label_y + (atlas.cell_height - glyph.bearing_y);
+                let gw = glyph.width * z;
+                let gh = glyph.height * z;
+                let gx = lx + glyph.bearing_x * z;
+                let gy = label_y + (char_h - glyph.bearing_y * z);
                 let base = batch.fg_verts.len() as u32;
                 batch.fg_verts.extend_from_slice(&[
                     TextVertex { position: [gx, gy], tex_coords: [glyph.tex_x, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
-                    TextVertex { position: [gx + glyph.width, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
-                    TextVertex { position: [gx + glyph.width, gy + glyph.height], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
-                    TextVertex { position: [gx, gy + glyph.height], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
+                    TextVertex { position: [gx + gw, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
+                    TextVertex { position: [gx + gw, gy + gh], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
+                    TextVertex { position: [gx, gy + gh], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
                 ]);
                 batch.fg_indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
             }
         }
-        lx += atlas.cell_width;
+        lx += char_w;
     }
 
     batch

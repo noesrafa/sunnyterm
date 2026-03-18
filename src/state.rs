@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::terminal::cell::Cell;
-
 /// Persistent state saved to ~/.sunnyterm/
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppState {
@@ -19,14 +17,6 @@ pub struct TileState {
     pub w: f32,
     pub h: f32,
     pub name: String,
-    #[serde(default)]
-    pub scrollback: Vec<Vec<Cell>>,
-    #[serde(default)]
-    pub grid_cells: Vec<Vec<Cell>>,
-    #[serde(default)]
-    pub cursor_row: usize,
-    #[serde(default)]
-    pub cursor_col: usize,
 }
 
 impl Default for AppState {

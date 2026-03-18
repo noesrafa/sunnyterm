@@ -20,6 +20,7 @@ pub struct GlyphAtlas {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     cache: HashMap<(char, bool, bool), GlyphInfo>,
+    ui_cache: HashMap<char, GlyphInfo>,
     cursor_x: u32,
     cursor_y: u32,
     row_height: u32,
@@ -103,6 +104,7 @@ impl GlyphAtlas {
             view,
             sampler,
             cache: HashMap::new(),
+            ui_cache: HashMap::new(),
             cursor_x: 0,
             cursor_y: 0,
             row_height: 0,
@@ -232,6 +234,34 @@ impl GlyphAtlas {
         glyph_info
     }
 
+    /// Rasterize a glyph at base zoom (zoom=1) for UI elements that need constant screen size.
+    pub fn get_or_rasterize_ui(
+        &mut self,
+        c: char,
+        queue: &wgpu::Queue,
+    ) -> GlyphInfo {
+        if let Some(info) = self.ui_cache.get(&c) {
+            return *info;
+        }
+
+        // Temporarily switch to base zoom for rasterization
+        let saved_font_size = self.physical_font_size;
+        let saved_zoom = self.render_zoom;
+        self.physical_font_size = self.base_font_size * self.scale_factor;
+        self.render_zoom = 1.0;
+
+        let info = self.get_or_rasterize(c, false, false, queue);
+
+        // Restore
+        self.physical_font_size = saved_font_size;
+        self.render_zoom = saved_zoom;
+
+        // Move from normal cache to UI cache
+        self.cache.remove(&(c, false, false));
+        self.ui_cache.insert(c, info);
+        info
+    }
+
     /// Update the render zoom. Re-rasterizes all cached glyphs if zoom changed enough.
     /// cell_width/cell_height stay the same (they're in canvas coords).
     /// Only the bitmap resolution changes.
@@ -246,6 +276,7 @@ impl GlyphAtlas {
 
         // Clear atlas and re-rasterize will happen lazily on next get_or_rasterize
         self.cache.clear();
+        self.ui_cache.clear();
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.row_height = 0;

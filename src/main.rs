@@ -126,24 +126,34 @@ impl ApplicationHandler for LumeApp {
                 let py = y as f32 * s;
                 match (button, state) {
                     (winit::event::MouseButton::Left, winit::event::ElementState::Pressed) => {
-                        let now = std::time::Instant::now();
-                        let dt = now.duration_since(self.last_click).as_millis();
-                        let (lx, ly) = self.last_click_pos;
-                        let dist = ((x - lx).powi(2) + (y - ly).powi(2)).sqrt();
-                        if app.check_zoom_buttons(px, py) {
-                            // Handled by UI button, skip double-click logic
-                        } else if dt < 400 && dist < 10.0 {
+                        // Ctrl+Click: open URL under cursor
+                        if app.modifiers.super_key() {
                             let (cx, cy) = app.screen_to_canvas(px, py);
-                            match app.canvas.hit_test(cx, cy, app.scale_factor) {
-                                Some((_, true, _, _)) => app.start_rename(),
-                                None => app.spawn_tile_at(cx, cy),
-                                _ => {}
+                            if let Some(url) = app.url_at_canvas_pos(cx, cy) {
+                                let _ = std::process::Command::new("open").arg(&url).spawn();
                             }
+                            self.last_click = std::time::Instant::now();
+                            self.last_click_pos = (x, y);
                         } else {
-                            app.mouse_down(px, py);
+                            let now = std::time::Instant::now();
+                            let dt = now.duration_since(self.last_click).as_millis();
+                            let (lx, ly) = self.last_click_pos;
+                            let dist = ((x - lx).powi(2) + (y - ly).powi(2)).sqrt();
+                            if app.check_zoom_buttons(px, py) {
+                                // Handled by UI button, skip double-click logic
+                            } else if dt < 400 && dist < 10.0 {
+                                let (cx, cy) = app.screen_to_canvas(px, py);
+                                match app.canvas.hit_test(cx, cy, app.scale_factor) {
+                                    Some((_, true, _, _)) => app.start_rename(),
+                                    None => app.spawn_tile_at(cx, cy),
+                                    _ => {}
+                                }
+                            } else {
+                                app.mouse_down(px, py);
+                            }
+                            self.last_click = now;
+                            self.last_click_pos = (x, y);
                         }
-                        self.last_click = now;
-                        self.last_click_pos = (x, y);
                     }
                     (winit::event::MouseButton::Left, winit::event::ElementState::Released) => {
                         app.mouse_up();
@@ -165,7 +175,7 @@ impl ApplicationHandler for LumeApp {
                 if app.modifiers.super_key() {
                     let s = app.scale_factor;
                     let (mx, my) = self.cursor_pos;
-                    let step = y_delta * 0.05;
+                    let step = if y_delta > 0.0 { 0.1 } else { -0.1 };
                     app.zoom_at(mx as f32 * s, my as f32 * s, step);
                 } else {
                     let lines = y_delta as i32 * 3;
