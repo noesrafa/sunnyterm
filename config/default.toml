@@ -1,0 +1,13 @@
+[appearance]
+theme = "catppuccin-mocha"
+font_family = "JetBrains Mono"
+font_size = 15.0
+opacity = 0.95
+blur = true
+padding = 14
+
+[terminal]
+shell = "/bin/zsh"
+scrollback_lines = 10000
+cursor_style = "beam"
+cursor_blink = true
