@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod input;
+mod pane;
 mod renderer;
 mod terminal;
 mod ui;

@@ -6,51 +6,19 @@ use winit::window::Window;
 
 use crate::config::Config;
 use crate::input::keyboard;
+use crate::pane::Pane;
 use crate::renderer::atlas::GlyphAtlas;
-use crate::renderer::cursor::CursorRenderer;
+use crate::renderer::draw_helpers::DrawBatch;
 use crate::renderer::gpu::GpuContext;
-use crate::renderer::text::{TextRenderer, TextVertex};
-use crate::terminal::grid::Grid;
-use crate::terminal::parser::TermParser;
-use crate::terminal::pty::Pty;
+use crate::renderer::grid_renderer;
+use crate::renderer::text::TextVertex;
+use crate::renderer::tile_renderer;
+use crate::renderer::ui_renderer;
 use crate::ui::canvas::{Canvas, DragMode, TITLE_BAR_HEIGHT};
-use crate::ui::theme::{Color, Theme};
+use crate::ui::canvas_theme::CanvasTheme;
+use crate::ui::theme::Theme;
 
 use wgpu::util::DeviceExt;
-
-struct Pane {
-    grid: Grid,
-    parser: TermParser,
-    pty: Pty,
-    text_renderer: TextRenderer,
-    cursor_renderer: CursorRenderer,
-}
-
-impl Pane {
-    fn new(shell: &str, cols: usize, rows: usize, cursor_blink: bool) -> Self {
-        Self {
-            grid: Grid::new(cols, rows),
-            parser: TermParser::new(),
-            pty: Pty::spawn(shell, cols as u16, rows as u16).expect("Failed to spawn PTY"),
-            text_renderer: TextRenderer::new(),
-            cursor_renderer: CursorRenderer::new(cursor_blink),
-        }
-    }
-
-    fn read_pty(&mut self) {
-        let data = self.pty.try_read();
-        if !data.is_empty() {
-            self.parser.process(&data, &mut self.grid);
-        }
-    }
-
-    fn resize(&mut self, cols: usize, rows: usize) {
-        if cols > 0 && rows > 0 && (cols != self.grid.cols || rows != self.grid.rows) {
-            self.grid.resize(cols, rows);
-            let _ = self.pty.resize(cols as u16, rows as u16);
-        }
-    }
-}
 
 pub struct App {
     pub gpu: GpuContext,
@@ -542,191 +510,75 @@ impl App {
         let bar_h = TITLE_BAR_HEIGHT * s;
         let focused_id = self.canvas.focused_id();
         let draw_order = self.canvas.draw_order();
-        let dark = self.is_dark;
-
-        // Canvas colors based on theme
-        let canvas_clear = if dark {
-            wgpu::Color { r: 0.0024, g: 0.0024, b: 0.0024, a: 1.0 }
-        } else {
-            wgpu::Color { r: 0.5647, g: 0.5457, b: 0.4452, a: 1.0 }
-        };
-        let tile_bar_color = if dark { Color::from_hex(0x1B1D1F) } else { Color::from_hex(0xF5F5F5) };
-        let tile_border = if dark { Color::from_hex(0x353B40) } else { Color::from_hex(0xD6CEC4) };
-        let title_focused = if dark { Color::from_hex(0x888888) } else { Color::from_hex(0x444444) };
-        let title_unfocused = if dark { Color::from_hex(0x555555) } else { Color::from_hex(0x999999) };
-        let ui_btn_bg = if dark { Color::from_hex(0x1B1D1F) } else { Color::from_hex(0xF5F5F5) };
-        let ui_btn_border = if dark { Color::from_hex(0x353B40) } else { Color::from_hex(0xD6CEC4) };
-        let ui_icon = if dark { Color::from_hex(0x888888) } else { Color::from_hex(0x555555) };
-        let ui_label = if dark { Color::from_hex(0x555555) } else { Color::from_hex(0x888888) };
-        let dot_dim_a: f32 = if dark { 0.15 } else { 0.25 };
-        let dot_bright_a: f32 = if dark { 0.35 } else { 0.50 };
-        let dot_rgb: f32 = if dark { 1.0 } else { 0.0 };
-
-        // Per-tile: (rounded_v, rounded_i, bg_v, bg_i, fg_v, fg_i)
-        type TileDraw = (Vec<TextVertex>, Vec<u32>, Vec<TextVertex>, Vec<u32>, Vec<TextVertex>, Vec<u32>);
-        let mut tile_draws: Vec<TileDraw> = Vec::new();
         let corner_radius = 10.0 * s;
+
+        let canvas_theme = if self.is_dark {
+            CanvasTheme::dark()
+        } else {
+            CanvasTheme::light()
+        };
+
+        // Build tile draw batches
+        let mut tile_draws: Vec<DrawBatch> = Vec::new();
 
         for &tile_id in &draw_order {
             let Some(tile) = self.canvas.tile(tile_id) else { continue };
-            let tile_name = tile.name.clone();
+            let tile_clone = crate::ui::canvas::Tile {
+                id: tile.id,
+                x: tile.x,
+                y: tile.y,
+                w: tile.w,
+                h: tile.h,
+                name: tile.name.clone(),
+            };
             let Some(pane) = self.panes.get_mut(&tile_id) else { continue };
             let is_focused = Some(tile_id) == focused_id;
-
-            let tx = tile.x;
-            let ty = tile.y;
-            let tw = tile.w;
-            let th = tile.h;
-            let total_h = th + bar_h;
-
-            let mut rnd_v: Vec<TextVertex> = Vec::new();
-            let mut rnd_i: Vec<u32> = Vec::new();
-            let mut bg_v: Vec<TextVertex> = Vec::new();
-            let mut bg_i: Vec<u32> = Vec::new();
-            let mut fg_v: Vec<TextVertex> = Vec::new();
-            let mut fg_i: Vec<u32> = Vec::new();
-
-            let border_color = tile_border.to_array();
-            let bw = s;
-            let bw2 = bw * 2.0;
-            let br = corner_radius + bw;
-
-            // 1) Border (larger rounded rect, drawn first = behind)
-            push_rounded_quad(&mut rnd_v, &mut rnd_i,
-                tx - bw, ty - bw, tw + bw2, total_h + bw2, tw + bw2, total_h + bw2, br, border_color);
-
-            // 2) Tile background (rounded)
-            let tile_bg = self.theme.background.to_array();
-            push_rounded_quad(&mut rnd_v, &mut rnd_i,
-                tx, ty, tw, total_h, tw, total_h, corner_radius, tile_bg);
-
-            // 3) Title bar
-            let bar_color = tile_bar_color.to_array();
-            push_rounded_quad(&mut rnd_v, &mut rnd_i,
-                tx, ty, tw, bar_h, tw, total_h, corner_radius, bar_color);
-
-            let content_y = ty + bar_h;
-            // Separator line
-            push_quad(&mut bg_v, &mut bg_i, tx + 1.0, content_y, tw - 2.0, bw * 0.5, border_color);
-
-            // Resize handle indicator (small triangle-ish in bottom-right corner)
-            let handle_size = 8.0 * s;
-            let handle_color = border_color;
-            // Two small lines to suggest a grip
-            push_quad(&mut bg_v, &mut bg_i,
-                tx + tw - handle_size - 2.0 * s, ty + total_h - 3.0 * s,
-                handle_size, bw, handle_color);
-            push_quad(&mut bg_v, &mut bg_i,
-                tx + tw - 3.0 * s, ty + total_h - handle_size - 2.0 * s,
-                bw, handle_size, handle_color);
-
-            // Title text
             let is_renaming = self.renaming && is_focused;
-            let display_name = if is_renaming {
-                format!("{}|", &self.rename_buffer)
-            } else {
-                tile_name
-            };
-            let title_color = if is_renaming {
-                self.theme.foreground.to_array()
-            } else if is_focused {
-                title_focused.to_array()
-            } else {
-                title_unfocused.to_array()
-            };
-            let title_y = ty + (bar_h - self.atlas.cell_height) / 2.0;
-            let mut title_x = tx + 10.0 * s;
-            for c in display_name.chars() {
-                if title_x + self.atlas.cell_width > tx + tw - 10.0 * s {
-                    break;
-                }
-                if c != ' ' {
-                    let glyph = self.atlas.get_or_rasterize(c, false, false, &self.gpu.queue);
-                    if glyph.width > 0.0 && glyph.height > 0.0 {
-                        let gx = title_x + glyph.bearing_x;
-                        let gy = title_y + (self.atlas.cell_height - glyph.bearing_y);
-                        let fg_base = fg_v.len() as u32;
-                        fg_v.extend_from_slice(&[
-                            TextVertex { position: [gx, gy], tex_coords: [glyph.tex_x, glyph.tex_y], color: title_color, bg_color: [0.0; 4] },
-                            TextVertex { position: [gx + glyph.width, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: title_color, bg_color: [0.0; 4] },
-                            TextVertex { position: [gx + glyph.width, gy + glyph.height], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: title_color, bg_color: [0.0; 4] },
-                            TextVertex { position: [gx, gy + glyph.height], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: title_color, bg_color: [0.0; 4] },
-                        ]);
-                        fg_i.extend_from_slice(&[fg_base, fg_base+1, fg_base+2, fg_base, fg_base+2, fg_base+3]);
-                    }
-                }
-                title_x += self.atlas.cell_width;
-            }
 
-            // Pane text
-            pane.cursor_renderer.visible = is_focused;
-            pane.cursor_renderer.update();
-            pane.text_renderer.build_vertices(
-                &pane.grid, &mut self.atlas, &self.theme, padding, &self.gpu.queue,
+            let batch = tile_renderer::build_tile_batch(
+                &tile_clone,
+                pane,
+                &mut self.atlas,
+                &self.theme,
+                &canvas_theme,
+                &self.gpu.queue,
+                s,
+                bar_h,
+                padding,
+                corner_radius,
+                is_focused,
+                is_renaming,
+                &self.rename_buffer,
+                &self.config.terminal.cursor_style,
             );
-
-            let ox = tx;
-            let oy = content_y;
-
-            let bg_base = bg_v.len() as u32;
-            for v in &pane.text_renderer.bg_vertices {
-                bg_v.push(TextVertex { position: [v.position[0] + ox, v.position[1] + oy], ..*v });
-            }
-            for idx in &pane.text_renderer.bg_indices { bg_i.push(idx + bg_base); }
-
-            let fg_base = fg_v.len() as u32;
-            for v in &pane.text_renderer.fg_vertices {
-                fg_v.push(TextVertex { position: [v.position[0] + ox, v.position[1] + oy], ..*v });
-            }
-            for idx in &pane.text_renderer.fg_indices { fg_i.push(idx + fg_base); }
-
-            if is_focused {
-                let (cverts, cidxs) = pane.cursor_renderer.build_vertices(
-                    pane.grid.cursor_row, pane.grid.cursor_col,
-                    self.atlas.cell_width, self.atlas.cell_height,
-                    padding, &self.config.terminal.cursor_style, &self.theme,
-                );
-                let cur_base = bg_v.len() as u32;
-                for v in &cverts { bg_v.push(TextVertex { position: [v.position[0] + ox, v.position[1] + oy], ..*v }); }
-                for idx in &cidxs { bg_i.push(idx + cur_base); }
-            }
-
-            tile_draws.push((rnd_v, rnd_i, bg_v, bg_i, fg_v, fg_i));
+            tile_draws.push(batch);
         }
 
-        // Build dot grid for the canvas background (using rounded pipeline for circles)
-        let mut dot_v: Vec<TextVertex> = Vec::new();
-        let mut dot_i: Vec<u32> = Vec::new();
-        {
-            let pan = self.canvas_pan;
-            let view_w = self.gpu.surface_config.width as f32 / self.canvas_zoom;
-            let view_h = self.gpu.surface_config.height as f32 / self.canvas_zoom;
-            let dot_spacing = 24.0 * s;
-            let dot_small = 2.0 * s;
-            let dot_large = 3.2 * s;
-            let color_dim = [dot_rgb, dot_rgb, dot_rgb, dot_dim_a];
-            let color_bright = [dot_rgb, dot_rgb, dot_rgb, dot_bright_a];
-            let major = 6; // every 6th dot is brighter
-            let start_x = (pan.0 / dot_spacing).floor() * dot_spacing;
-            let start_y = (pan.1 / dot_spacing).floor() * dot_spacing;
-            let mut gx = start_x;
-            let mut ix: i32 = ((start_x / dot_spacing).round()) as i32;
-            while gx < pan.0 + view_w + dot_spacing {
-                let mut gy = start_y;
-                let mut iy: i32 = ((start_y / dot_spacing).round()) as i32;
-                while gy < pan.1 + view_h + dot_spacing {
-                    let is_major = ix.rem_euclid(major) == 0 && iy.rem_euclid(major) == 0;
-                    let (sz, col) = if is_major { (dot_large, color_bright) } else { (dot_small, color_dim) };
-                    push_rounded_quad(&mut dot_v, &mut dot_i, gx - sz * 0.5, gy - sz * 0.5, sz, sz, sz, sz, sz * 0.5, col);
-                    gy += dot_spacing;
-                    iy += 1;
-                }
-                gx += dot_spacing;
-                ix += 1;
-            }
-        }
+        // Build dot grid
+        let view_w = self.gpu.surface_config.width as f32 / self.canvas_zoom;
+        let view_h = self.gpu.surface_config.height as f32 / self.canvas_zoom;
+        let (dot_v, dot_i) = grid_renderer::build_dot_grid(
+            self.canvas_pan,
+            view_w,
+            view_h,
+            s,
+            &canvas_theme,
+        );
 
-        // GPU draw: render each tile fully (bg then fg) before the next
+        // Build UI batch
+        let ui_batch = ui_renderer::build_ui_batch(
+            self.canvas_zoom,
+            self.canvas_pan,
+            self.is_dark,
+            &mut self.atlas,
+            &canvas_theme,
+            &self.gpu.queue,
+            self.gpu.surface_config.width as f32,
+            self.gpu.surface_config.height as f32,
+            s,
+        );
+
+        // GPU draw
         let output = self.gpu.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -737,7 +589,7 @@ impl App {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view, resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(canvas_clear),
+                        load: wgpu::LoadOp::Clear(canvas_theme.clear_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -757,198 +609,71 @@ impl App {
                 pass.draw_indexed(0..dot_i.len() as u32, 0, 0..1);
             }
 
-            for (rnd_v, rnd_i, bg_v, bg_i, fg_v, fg_i) in &tile_draws {
+            for batch in &tile_draws {
                 // Rounded rects (border + tile bg + title bar)
-                if !rnd_i.is_empty() {
-                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(rnd_v), usage: wgpu::BufferUsages::VERTEX });
-                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(rnd_i), usage: wgpu::BufferUsages::INDEX });
+                if !batch.rounded_indices.is_empty() {
+                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&batch.rounded_verts), usage: wgpu::BufferUsages::VERTEX });
+                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&batch.rounded_indices), usage: wgpu::BufferUsages::INDEX });
                     pass.set_pipeline(&self.rounded_pipeline);
                     pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                     pass.set_bind_group(1, &self.texture_bind_group, &[]);
                     pass.set_vertex_buffer(0, vb.slice(..));
                     pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..rnd_i.len() as u32, 0, 0..1);
+                    pass.draw_indexed(0..batch.rounded_indices.len() as u32, 0, 0..1);
                 }
                 // Regular bg quads (separator, cell bgs, cursor)
-                if !bg_i.is_empty() {
-                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(bg_v), usage: wgpu::BufferUsages::VERTEX });
-                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(bg_i), usage: wgpu::BufferUsages::INDEX });
+                if !batch.bg_indices.is_empty() {
+                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&batch.bg_verts), usage: wgpu::BufferUsages::VERTEX });
+                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&batch.bg_indices), usage: wgpu::BufferUsages::INDEX });
                     pass.set_pipeline(&self.bg_pipeline);
                     pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                     pass.set_bind_group(1, &self.texture_bind_group, &[]);
                     pass.set_vertex_buffer(0, vb.slice(..));
                     pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..bg_i.len() as u32, 0, 0..1);
+                    pass.draw_indexed(0..batch.bg_indices.len() as u32, 0, 0..1);
                 }
-                if !fg_i.is_empty() {
-                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(fg_v), usage: wgpu::BufferUsages::VERTEX });
-                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(fg_i), usage: wgpu::BufferUsages::INDEX });
+                if !batch.fg_indices.is_empty() {
+                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&batch.fg_verts), usage: wgpu::BufferUsages::VERTEX });
+                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&batch.fg_indices), usage: wgpu::BufferUsages::INDEX });
                     pass.set_pipeline(&self.fg_pipeline);
                     pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                     pass.set_bind_group(1, &self.texture_bind_group, &[]);
                     pass.set_vertex_buffer(0, vb.slice(..));
                     pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..fg_i.len() as u32, 0, 0..1);
+                    pass.draw_indexed(0..batch.fg_indices.len() as u32, 0, 0..1);
                 }
             }
 
-            // Zoom UI (bottom-right, fixed on screen)
-            {
-                let zoom = self.canvas_zoom;
-                let pan = self.canvas_pan;
-                let sw = self.gpu.surface_config.width as f32 / zoom + pan.0;
-                let sh = self.gpu.surface_config.height as f32 / zoom + pan.1;
-                let z = 1.0 / zoom; // scale factor for UI elements
-                let btn_w = 32.0 * s * z;
-                let btn_h = 32.0 * s * z;
-                let margin = 16.0 * s * z;
-                let gap = 4.0 * s * z;
-                let radius = 8.0 * s * z;
-                let bw = 1.0 * s * z;
-
-                let mut ui_rnd: Vec<TextVertex> = Vec::new();
-                let mut ui_rnd_i: Vec<u32> = Vec::new();
-                let mut ui_bg: Vec<TextVertex> = Vec::new();
-                let mut ui_bg_i: Vec<u32> = Vec::new();
-                let mut ui_fg: Vec<TextVertex> = Vec::new();
-                let mut ui_fg_i: Vec<u32> = Vec::new();
-
-                let btn_bg = ui_btn_bg.to_array();
-                let btn_border = ui_btn_border.to_array();
-                let icon_color = ui_icon.to_array();
-                let line_w = 1.5 * s * z;
-
-                // Container: both buttons in one rounded pill + toggle below
-                let pill_h = btn_h * 2.0 + gap;
-                let total_ui_h = pill_h + gap * 2.0 + btn_h; // pill + gap + toggle
-                let bx = sw - margin - btn_w;
-                let by = sh - margin - total_ui_h;
-
-                // Border (outer rounded rect)
-                push_rounded_quad(&mut ui_rnd, &mut ui_rnd_i,
-                    bx - bw, by - bw, btn_w + bw * 2.0, pill_h + bw * 2.0,
-                    btn_w + bw * 2.0, pill_h + bw * 2.0, radius + bw, btn_border);
-                // Background (inner rounded rect)
-                push_rounded_quad(&mut ui_rnd, &mut ui_rnd_i,
-                    bx, by, btn_w, pill_h, btn_w, pill_h, radius, btn_bg);
-
-                // Divider line between buttons
-                let div_y = by + btn_h + gap * 0.5 - bw * 0.5;
-                push_quad(&mut ui_bg, &mut ui_bg_i, bx + 6.0 * s * z, div_y, btn_w - 12.0 * s * z, bw, btn_border);
-
-                // + icon (top button)
-                let icon_len = 10.0 * s * z;
-                // horizontal
-                push_quad(&mut ui_bg, &mut ui_bg_i,
-                    bx + (btn_w - icon_len) / 2.0, by + (btn_h - line_w) / 2.0,
-                    icon_len, line_w, icon_color);
-                // vertical
-                push_quad(&mut ui_bg, &mut ui_bg_i,
-                    bx + (btn_w - line_w) / 2.0, by + (btn_h - icon_len) / 2.0,
-                    line_w, icon_len, icon_color);
-
-                // - icon (bottom button)
-                let by2 = by + btn_h + gap;
-                push_quad(&mut ui_bg, &mut ui_bg_i,
-                    bx + (btn_w - icon_len) / 2.0, by2 + (btn_h - line_w) / 2.0,
-                    icon_len, line_w, icon_color);
-
-                // Theme toggle button (below zoom pill)
-                let toggle_y = by + pill_h + gap * 2.0;
-                // Border
-                push_rounded_quad(&mut ui_rnd, &mut ui_rnd_i,
-                    bx - bw, toggle_y - bw, btn_w + bw * 2.0, btn_h + bw * 2.0,
-                    btn_w + bw * 2.0, btn_h + bw * 2.0, radius + bw, btn_border);
-                // Background
-                push_rounded_quad(&mut ui_rnd, &mut ui_rnd_i,
-                    bx, toggle_y, btn_w, btn_h, btn_w, btn_h, radius, btn_bg);
-                // Sun/Moon icon: circle in center
-                let icon_r = 5.0 * s * z;
-                let cx = bx + btn_w / 2.0;
-                let cy = toggle_y + btn_h / 2.0;
-                if dark {
-                    // Moon: crescent (circle + smaller dark circle offset to the right)
-                    push_rounded_quad(&mut ui_rnd, &mut ui_rnd_i,
-                        cx - icon_r, cy - icon_r, icon_r * 2.0, icon_r * 2.0,
-                        icon_r * 2.0, icon_r * 2.0, icon_r, icon_color);
-                    // Dark cutout circle offset
-                    push_rounded_quad(&mut ui_rnd, &mut ui_rnd_i,
-                        cx - icon_r * 0.3, cy - icon_r * 1.0, icon_r * 1.6, icon_r * 1.6,
-                        icon_r * 1.6, icon_r * 1.6, icon_r * 0.8, btn_bg);
-                } else {
-                    // Sun: circle + rays (small lines)
-                    push_rounded_quad(&mut ui_rnd, &mut ui_rnd_i,
-                        cx - icon_r * 0.7, cy - icon_r * 0.7, icon_r * 1.4, icon_r * 1.4,
-                        icon_r * 1.4, icon_r * 1.4, icon_r * 0.7, icon_color);
-                    // 4 rays
-                    let ray_len = 3.0 * s * z;
-                    let ray_w = 1.5 * s * z;
-                    let offset = icon_r + 1.5 * s * z;
-                    push_quad(&mut ui_bg, &mut ui_bg_i, cx - ray_w * 0.5, cy - offset - ray_len, ray_w, ray_len, icon_color); // top
-                    push_quad(&mut ui_bg, &mut ui_bg_i, cx - ray_w * 0.5, cy + offset, ray_w, ray_len, icon_color); // bottom
-                    push_quad(&mut ui_bg, &mut ui_bg_i, cx - offset - ray_len, cy - ray_w * 0.5, ray_len, ray_w, icon_color); // left
-                    push_quad(&mut ui_bg, &mut ui_bg_i, cx + offset, cy - ray_w * 0.5, ray_len, ray_w, icon_color); // right
-                }
-
-                // Zoom percentage label (above the pill)
-                let zoom_pct = format!("{}%", (self.canvas_zoom * 100.0) as u32);
-                let label_w = zoom_pct.len() as f32 * self.atlas.cell_width;
-                let label_x = bx + (btn_w - label_w) / 2.0;
-                let label_y = by - self.atlas.cell_height - 6.0 * s * z;
-                let label_color = ui_label.to_array();
-                let mut lx = label_x;
-                for c in zoom_pct.chars() {
-                    if c != ' ' {
-                        let glyph = self.atlas.get_or_rasterize(c, false, false, &self.gpu.queue);
-                        if glyph.width > 0.0 && glyph.height > 0.0 {
-                            let gx = lx + glyph.bearing_x;
-                            let gy = label_y + (self.atlas.cell_height - glyph.bearing_y);
-                            let base = ui_fg.len() as u32;
-                            ui_fg.extend_from_slice(&[
-                                TextVertex { position: [gx, gy], tex_coords: [glyph.tex_x, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
-                                TextVertex { position: [gx + glyph.width, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
-                                TextVertex { position: [gx + glyph.width, gy + glyph.height], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
-                                TextVertex { position: [gx, gy + glyph.height], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
-                            ]);
-                            ui_fg_i.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
-                        }
-                    }
-                    lx += self.atlas.cell_width;
-                }
-
-                // Draw rounded rects
-                if !ui_rnd_i.is_empty() {
-                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_rnd), usage: wgpu::BufferUsages::VERTEX });
-                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_rnd_i), usage: wgpu::BufferUsages::INDEX });
-                    pass.set_pipeline(&self.rounded_pipeline);
-                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    pass.set_bind_group(1, &self.texture_bind_group, &[]);
-                    pass.set_vertex_buffer(0, vb.slice(..));
-                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..ui_rnd_i.len() as u32, 0, 0..1);
-                }
-                // Draw bg quads (divider, icons)
-                if !ui_bg_i.is_empty() {
-                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_bg), usage: wgpu::BufferUsages::VERTEX });
-                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_bg_i), usage: wgpu::BufferUsages::INDEX });
-                    pass.set_pipeline(&self.bg_pipeline);
-                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    pass.set_bind_group(1, &self.texture_bind_group, &[]);
-                    pass.set_vertex_buffer(0, vb.slice(..));
-                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..ui_bg_i.len() as u32, 0, 0..1);
-                }
-                // Draw text (zoom label)
-                if !ui_fg_i.is_empty() {
-                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_fg), usage: wgpu::BufferUsages::VERTEX });
-                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_fg_i), usage: wgpu::BufferUsages::INDEX });
-                    pass.set_pipeline(&self.fg_pipeline);
-                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    pass.set_bind_group(1, &self.texture_bind_group, &[]);
-                    pass.set_vertex_buffer(0, vb.slice(..));
-                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..ui_fg_i.len() as u32, 0, 0..1);
-                }
+            // Draw UI (zoom buttons + theme toggle)
+            if !ui_batch.rounded_indices.is_empty() {
+                let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_batch.rounded_verts), usage: wgpu::BufferUsages::VERTEX });
+                let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_batch.rounded_indices), usage: wgpu::BufferUsages::INDEX });
+                pass.set_pipeline(&self.rounded_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_bind_group(1, &self.texture_bind_group, &[]);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..ui_batch.rounded_indices.len() as u32, 0, 0..1);
+            }
+            if !ui_batch.bg_indices.is_empty() {
+                let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_batch.bg_verts), usage: wgpu::BufferUsages::VERTEX });
+                let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_batch.bg_indices), usage: wgpu::BufferUsages::INDEX });
+                pass.set_pipeline(&self.bg_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_bind_group(1, &self.texture_bind_group, &[]);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..ui_batch.bg_indices.len() as u32, 0, 0..1);
+            }
+            if !ui_batch.fg_indices.is_empty() {
+                let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_batch.fg_verts), usage: wgpu::BufferUsages::VERTEX });
+                let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&ui_batch.fg_indices), usage: wgpu::BufferUsages::INDEX });
+                pass.set_pipeline(&self.fg_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_bind_group(1, &self.texture_bind_group, &[]);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..ui_batch.fg_indices.len() as u32, 0, 0..1);
             }
         }
 
@@ -960,35 +685,4 @@ impl App {
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
-}
-
-fn push_quad(verts: &mut Vec<TextVertex>, idxs: &mut Vec<u32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-    let base = verts.len() as u32;
-    verts.extend_from_slice(&[
-        TextVertex { position: [x, y], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: color },
-        TextVertex { position: [x + w, y], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: color },
-        TextVertex { position: [x + w, y + h], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: color },
-        TextVertex { position: [x, y + h], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: color },
-    ]);
-    idxs.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
-}
-
-/// Push a rounded-rect quad. The shader uses:
-/// - tex_coords = local position within the quad
-/// - color.xy = full SDF rect size, color.z = corner radius
-/// quad_w/quad_h = the actual quad size, sdf_w/sdf_h = the full rounded rect size for SDF
-fn push_rounded_quad(
-    verts: &mut Vec<TextVertex>, idxs: &mut Vec<u32>,
-    x: f32, y: f32, quad_w: f32, quad_h: f32,
-    sdf_w: f32, sdf_h: f32, radius: f32, bg_color: [f32; 4],
-) {
-    let base = verts.len() as u32;
-    let c = [sdf_w, sdf_h, radius, 0.0];
-    verts.extend_from_slice(&[
-        TextVertex { position: [x, y], tex_coords: [0.0, 0.0], color: c, bg_color },
-        TextVertex { position: [x + quad_w, y], tex_coords: [quad_w, 0.0], color: c, bg_color },
-        TextVertex { position: [x + quad_w, y + quad_h], tex_coords: [quad_w, quad_h], color: c, bg_color },
-        TextVertex { position: [x, y + quad_h], tex_coords: [0.0, quad_h], color: c, bg_color },
-    ]);
-    idxs.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
 }
