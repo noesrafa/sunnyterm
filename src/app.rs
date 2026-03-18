@@ -324,6 +324,7 @@ impl App {
         } else {
             Theme::light()
         };
+        set_macos_appearance(&self.window, self.is_dark);
         self.mark_dirty();
     }
 
@@ -1053,6 +1054,39 @@ impl App {
         self.window.request_redraw();
     }
 }
+
+/// Set macOS window titlebar appearance to match theme.
+#[cfg(target_os = "macos")]
+pub fn set_macos_appearance(window: &Window, dark: bool) {
+    use winit::raw_window_handle::HasWindowHandle;
+    if let Ok(handle) = window.window_handle() {
+        if let winit::raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+            #[allow(deprecated, unexpected_cfgs)]
+            unsafe {
+                use cocoa::foundation::NSString as NSStringTrait;
+                use objc::runtime::Object;
+                use objc::{msg_send, sel, sel_impl, class};
+                let ns_view: *mut Object = appkit.ns_view.as_ptr() as *mut Object;
+                let ns_window: *mut Object = msg_send![ns_view, window];
+                let name_str = if dark {
+                    "NSAppearanceNameVibrantDark"
+                } else {
+                    "NSAppearanceNameVibrantLight"
+                };
+                let name = cocoa::foundation::NSString::alloc(cocoa::base::nil)
+                    .init_str(name_str);
+                let appearance: *mut Object = msg_send![
+                    class!(NSAppearance),
+                    appearanceNamed: name
+                ];
+                let _: () = msg_send![ns_window, setAppearance: appearance];
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_macos_appearance(_window: &Window, _dark: bool) {}
 
 /// Read text from the macOS clipboard via pbpaste.
 fn clipboard_read() -> Option<String> {

@@ -61,19 +61,11 @@ impl ApplicationHandler for LumeApp {
                 if let winit::raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() {
                     #[allow(deprecated, unexpected_cfgs)]
                     unsafe {
-                        use cocoa::foundation::NSString as NSStringTrait;
                         use objc::runtime::{Object, YES};
-                        use objc::{msg_send, sel, sel_impl, class};
+                        use objc::{msg_send, sel, sel_impl};
                         let ns_view: *mut Object = appkit.ns_view.as_ptr() as *mut Object;
                         let ns_window: *mut Object = msg_send![ns_view, window];
                         let _: () = msg_send![ns_window, setTitlebarAppearsTransparent: YES];
-                        let name = cocoa::foundation::NSString::alloc(cocoa::base::nil)
-                            .init_str("NSAppearanceNameVibrantDark");
-                        let appearance: *mut Object = msg_send![
-                            class!(NSAppearance),
-                            appearanceNamed: name
-                        ];
-                        let _: () = msg_send![ns_window, setAppearance: appearance];
                     }
                 }
             }
@@ -82,7 +74,11 @@ impl ApplicationHandler for LumeApp {
         self.window = Some(window.clone());
 
         let config = self.config.clone();
-        let app = pollster::block_on(App::new(window, config));
+        let app = pollster::block_on(App::new(window.clone(), config));
+
+        // Set initial titlebar appearance based on saved theme
+        app::set_macos_appearance(&window, app.is_dark);
+
         self.app = Some(app);
     }
 
