@@ -1,3 +1,4 @@
+use crate::input::completion::CompletionState;
 use crate::renderer::cursor::CursorRenderer;
 use crate::renderer::text::TextRenderer;
 use crate::terminal::grid::Grid;
@@ -16,6 +17,12 @@ pub struct Pane {
     /// True when a child process is running in the foreground (e.g. claude, node).
     /// Input bypasses the buffer and goes directly to the PTY.
     pub passthrough: bool,
+    /// Active tab completion session.
+    pub completion: Option<CompletionState>,
+    /// History navigation index (0 = most recent). None = not navigating.
+    pub history_index: Option<usize>,
+    /// Stashed input buffer when entering history navigation.
+    pub history_stash: String,
 }
 
 impl Pane {
@@ -30,6 +37,9 @@ impl Pane {
             input_buffer: String::new(),
             input_cursor: 0,
             passthrough: false,
+            completion: None,
+            history_index: None,
+            history_stash: String::new(),
         }
     }
 
@@ -176,5 +186,35 @@ impl Pane {
         if self.input_buffer.is_empty() {
             let _ = self.pty.write(b"\x04");
         }
+    }
+
+    /// Apply the current completion candidate to the input buffer.
+    pub fn apply_completion(&mut self, index: usize) {
+        let Some(ref comp) = self.completion else { return };
+        if index >= comp.candidates.len() { return; }
+        let candidate = comp.candidates[index].clone();
+        let word_start = comp.word_start;
+        self.input_buffer.replace_range(word_start..self.input_cursor, &candidate);
+        self.input_cursor = word_start + candidate.len();
+    }
+
+    /// Cycle to the next completion candidate.
+    pub fn cycle_completion(&mut self) {
+        let Some(ref mut comp) = self.completion else { return };
+        // Revert to original word first
+        let original = comp.original_word.clone();
+        let word_start = comp.word_start;
+        self.input_buffer.replace_range(word_start..self.input_cursor, &original);
+        self.input_cursor = word_start + original.len();
+        // Advance index
+        comp.index = (comp.index + 1) % comp.candidates.len();
+        let candidate = comp.candidates[comp.index].clone();
+        self.input_buffer.replace_range(word_start..self.input_cursor, &candidate);
+        self.input_cursor = word_start + candidate.len();
+    }
+
+    /// Cancel any active completion session.
+    pub fn cancel_completion(&mut self) {
+        self.completion = None;
     }
 }

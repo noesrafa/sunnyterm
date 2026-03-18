@@ -6,7 +6,8 @@ use winit::keyboard::ModifiersState;
 use winit::window::Window;
 
 use crate::config::Config;
-use crate::input::keyboard;
+use crate::input::{completion, keyboard};
+use crate::input::history::CommandHistory;
 use crate::pane::Pane;
 use crate::state::{AppState, TileState};
 use crate::renderer::atlas::GlyphAtlas;
@@ -50,6 +51,7 @@ pub struct App {
 
     state_dirty: bool,
     last_save: Instant,
+    command_history: CommandHistory,
 }
 
 #[repr(C)]
@@ -231,6 +233,7 @@ impl App {
             window,
             state_dirty: false,
             last_save: Instant::now(),
+            command_history: CommandHistory::load(),
         }
     }
 
@@ -583,9 +586,20 @@ impl App {
 
         if let Some(id) = self.canvas.focused_id() {
             if let Some(pane) = self.panes.get_mut(&id) {
+                // Cancel completion on any non-Tab key
+                let is_tab = matches!(&event.logical_key, Key::Named(NamedKey::Tab));
+                if !is_tab {
+                    pane.cancel_completion();
+                }
+
                 match &event.logical_key {
                     Key::Named(NamedKey::Enter) => {
+                        let cmd = pane.input_buffer.trim().to_string();
                         pane.submit_input();
+                        if !cmd.is_empty() {
+                            self.command_history.push(&cmd);
+                        }
+                        pane.history_index = None;
                         pane.cursor_renderer.reset_blink();
                         pane.grid.scroll_offset = 0;
                     }
@@ -594,8 +608,29 @@ impl App {
                         pane.cursor_renderer.reset_blink();
                     }
                     Key::Named(NamedKey::Tab) => {
-                        pane.input_insert("    ");
+                        if pane.completion.is_some() {
+                            // Cycle through candidates
+                            pane.cycle_completion();
+                        } else {
+                            // Start new completion
+                            let cwd = pane.pty.cwd()
+                                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                            let state = completion::complete(
+                                &pane.input_buffer,
+                                pane.input_cursor,
+                                &cwd,
+                                &self.command_history,
+                            );
+                            if !state.candidates.is_empty() {
+                                pane.completion = Some(state);
+                                pane.apply_completion(0);
+                            }
+                        }
                         pane.cursor_renderer.reset_blink();
+                    }
+                    Key::Named(NamedKey::Escape) => {
+                        // Already cancelled above, but also reset history nav
+                        pane.history_index = None;
                     }
                     Key::Named(NamedKey::Delete) => {
                         return AppAction::ClosePane;
@@ -635,8 +670,33 @@ impl App {
                         pane.input_cursor = pane.input_buffer.len();
                         pane.cursor_renderer.reset_blink();
                     }
-                    Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => {
-                        // TODO: command history
+                    Key::Named(NamedKey::ArrowUp) => {
+                        let next_idx = pane.history_index.map(|i| i + 1).unwrap_or(0);
+                        if let Some(entry) = self.command_history.get(next_idx) {
+                            if pane.history_index.is_none() {
+                                pane.history_stash = pane.input_buffer.clone();
+                            }
+                            pane.history_index = Some(next_idx);
+                            pane.input_buffer = entry.to_string();
+                            pane.input_cursor = pane.input_buffer.len();
+                            pane.cursor_renderer.reset_blink();
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        if let Some(idx) = pane.history_index {
+                            if idx == 0 {
+                                pane.input_buffer = pane.history_stash.clone();
+                                pane.input_cursor = pane.input_buffer.len();
+                                pane.history_index = None;
+                            } else {
+                                pane.history_index = Some(idx - 1);
+                                if let Some(entry) = self.command_history.get(idx - 1) {
+                                    pane.input_buffer = entry.to_string();
+                                    pane.input_cursor = pane.input_buffer.len();
+                                }
+                            }
+                            pane.cursor_renderer.reset_blink();
+                        }
                     }
                     Key::Character(c) if ctrl => {
                         match c.as_str() {
@@ -890,6 +950,7 @@ impl App {
             tiles,
         };
         state.save();
+        self.command_history.save();
     }
 
     /// Given a canvas-space click position, find the URL under the cursor (if any).
