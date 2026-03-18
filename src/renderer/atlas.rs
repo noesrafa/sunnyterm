@@ -58,8 +58,8 @@ impl GlyphAtlas {
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -266,8 +266,8 @@ impl GlyphAtlas {
     /// cell_width/cell_height stay the same (they're in canvas coords).
     /// Only the bitmap resolution changes.
     pub fn set_zoom(&mut self, zoom: f32, queue: &wgpu::Queue) {
-        // Quantize zoom to avoid re-rasterizing on tiny changes
-        let quantized = (zoom * 4.0).round() / 4.0;
+        // Quantize zoom to 10% steps to avoid excessive re-rasterizing
+        let quantized = (zoom * 10.0).round() / 10.0;
         if (quantized - self.render_zoom).abs() < 0.01 {
             return;
         }

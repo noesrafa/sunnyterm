@@ -112,11 +112,13 @@ impl App {
             initial_pan_y = saved.canvas_pan.1;
             is_dark_init = saved.is_dark;
         } else {
-            // First launch: create default tile
-            let tw = 800.0 * scale_factor;
-            let th = 800.0 * scale_factor;
-            let tx = (size.width as f32 - tw) / 2.0;
-            let ty = (size.height as f32 - th - bar_h) / 2.0;
+            // First launch: create default tile (snapped to grid)
+            let grid = 24.0 * scale_factor;
+            let snap = |v: f32| (v / grid).round() * grid;
+            let tw = snap(800.0 * scale_factor);
+            let th = snap(800.0 * scale_factor);
+            let tx = snap((size.width as f32 - tw) / 2.0);
+            let ty = snap((size.height as f32 - th - bar_h) / 2.0);
             let tile_id = canvas.spawn(tx, ty, tw, th);
             let cols = ((tw - padding * 2.0) / atlas.cell_width).max(1.0) as usize;
             let rows = ((th - bar_h - padding * 2.0) / atlas.cell_height).max(1.0) as usize;
@@ -237,18 +239,25 @@ impl App {
         }
     }
 
+    fn snap_to_grid(&self, val: f32) -> f32 {
+        let grid = 24.0 * self.scale_factor;
+        (val / grid).round() * grid
+    }
+
     fn default_tile_size(&self) -> (f32, f32) {
-        let s = self.scale_factor;
-        (800.0 * s, 800.0 * s)
+        let tw = self.snap_to_grid(800.0 * self.scale_factor);
+        let th = self.snap_to_grid(800.0 * self.scale_factor);
+        (tw, th)
     }
 
     pub fn spawn_tile(&mut self) {
         let size = self.window.inner_size();
         let s = self.scale_factor;
         let (tw, th) = self.default_tile_size();
-        let offset = (self.canvas.tiles.len() as f32 * 30.0 * s) % (200.0 * s);
-        let x = ((size.width as f32 - tw) / 2.0 + offset).max(0.0);
-        let y = ((size.height as f32 - th) / 2.0 + offset).max(0.0);
+        let grid = 24.0 * s;
+        let offset = (self.canvas.tiles.len() as f32 * grid) % (8.0 * grid);
+        let x = self.snap_to_grid(((size.width as f32 - tw) / 2.0 + offset).max(0.0));
+        let y = self.snap_to_grid(((size.height as f32 - th) / 2.0 + offset).max(0.0));
 
         let tile_id = self.canvas.spawn(x, y, tw, th);
         let padding = self.config.appearance.padding as f32 * s;
@@ -265,8 +274,8 @@ impl App {
     pub fn spawn_tile_at(&mut self, cx: f32, cy: f32) {
         let s = self.scale_factor;
         let (tw, th) = self.default_tile_size();
-        let x = cx - tw / 2.0;
-        let y = cy - th / 2.0;
+        let x = self.snap_to_grid(cx - tw / 2.0);
+        let y = self.snap_to_grid(cy - th / 2.0);
 
         let tile_id = self.canvas.spawn(x, y, tw, th);
         let padding = self.config.appearance.padding as f32 * s;
@@ -556,6 +565,23 @@ impl App {
                     "w" => return AppAction::ClosePane,
                     "q" => return AppAction::Quit,
                     "=" | "+" | "-" => return AppAction::None,
+                    "v" => {
+                        // Cmd+V: paste from clipboard
+                        if let Some(text) = clipboard_read() {
+                            if let Some(id) = self.canvas.focused_id() {
+                                if let Some(pane) = self.panes.get_mut(&id) {
+                                    if pane.grid.alternate_screen || pane.passthrough {
+                                        // Send directly to PTY
+                                        let _ = pane.pty.write(text.as_bytes());
+                                    } else {
+                                        pane.input_insert(&text);
+                                    }
+                                    pane.cursor_renderer.reset_blink();
+                                }
+                            }
+                        }
+                        return AppAction::None;
+                    }
                     _ => {}
                 }
             }
@@ -592,16 +618,25 @@ impl App {
                     pane.cancel_completion();
                 }
 
+                let shift = self.modifiers.shift_key();
+
                 match &event.logical_key {
                     Key::Named(NamedKey::Enter) => {
-                        let cmd = pane.input_buffer.trim().to_string();
-                        pane.submit_input();
-                        if !cmd.is_empty() {
-                            self.command_history.push(&cmd);
+                        if shift {
+                            // Shift+Enter: insert newline
+                            pane.input_insert("\n");
+                            pane.ensure_cursor_visible(5);
+                            pane.cursor_renderer.reset_blink();
+                        } else {
+                            let cmd = pane.input_buffer.trim().to_string();
+                            pane.submit_input();
+                            if !cmd.is_empty() {
+                                self.command_history.push(&cmd);
+                            }
+                            pane.history_index = None;
+                            pane.cursor_renderer.reset_blink();
+                            pane.grid.scroll_offset = 0;
                         }
-                        pane.history_index = None;
-                        pane.cursor_renderer.reset_blink();
-                        pane.grid.scroll_offset = 0;
                     }
                     Key::Named(NamedKey::Space) => {
                         pane.input_insert(" ");
@@ -644,6 +679,7 @@ impl App {
                         } else {
                             pane.input_backspace();
                         }
+                        pane.ensure_cursor_visible(5);
                         pane.cursor_renderer.reset_blink();
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
@@ -752,7 +788,7 @@ impl App {
         let bar_h = TITLE_BAR_HEIGHT * s;
         let focused_id = self.canvas.focused_id();
         let draw_order = self.canvas.draw_order();
-        let corner_radius = 10.0 * s;
+        let corner_radius = 20.0 * s;
 
         let canvas_theme = if self.is_dark {
             CanvasTheme::dark()
@@ -1016,6 +1052,14 @@ impl App {
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
+}
+
+/// Read text from the macOS clipboard via pbpaste.
+fn clipboard_read() -> Option<String> {
+    std::process::Command::new("pbpaste")
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
 }
 
 /// Find a URL in `text` that spans over column `col`.

@@ -17,6 +17,8 @@ pub struct Pane {
     /// True when a child process is running in the foreground (e.g. claude, node).
     /// Input bypasses the buffer and goes directly to the PTY.
     pub passthrough: bool,
+    /// Scroll offset for multiline input (lines scrolled up).
+    pub input_scroll: usize,
     /// Active tab completion session.
     pub completion: Option<CompletionState>,
     /// History navigation index (0 = most recent). None = not navigating.
@@ -37,6 +39,7 @@ impl Pane {
             input_buffer: String::new(),
             input_cursor: 0,
             passthrough: false,
+            input_scroll: 0,
             completion: None,
             history_index: None,
             history_stash: String::new(),
@@ -59,12 +62,18 @@ impl Pane {
     }
 
     /// Submit the input buffer as a command to the PTY.
+    /// Each line is sent separately with \r.
     pub fn submit_input(&mut self) {
-        let mut cmd = self.input_buffer.clone();
-        cmd.push('\r');
-        let _ = self.pty.write(cmd.as_bytes());
+        for (i, line) in self.input_buffer.split('\n').enumerate() {
+            if i > 0 {
+                let _ = self.pty.write(b"\r");
+            }
+            let _ = self.pty.write(line.as_bytes());
+        }
+        let _ = self.pty.write(b"\r");
         self.input_buffer.clear();
         self.input_cursor = 0;
+        self.input_scroll = 0;
     }
 
     /// Insert text at cursor position.
@@ -111,9 +120,41 @@ impl Pane {
         }
     }
 
-    /// Get cursor column (char count, not byte offset).
+    /// Get cursor column (char count, not byte offset) — single-line legacy.
     pub fn input_cursor_col(&self) -> usize {
         self.input_buffer[..self.input_cursor].chars().count()
+    }
+
+    /// Get the (row, col) of the cursor in the multiline input buffer.
+    pub fn input_cursor_pos(&self) -> (usize, usize) {
+        let before = &self.input_buffer[..self.input_cursor];
+        let row = before.matches('\n').count();
+        let last_newline = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let col = before[last_newline..].chars().count();
+        (row, col)
+    }
+
+    /// Get the lines of the input buffer.
+    pub fn input_lines(&self) -> Vec<&str> {
+        self.input_buffer.split('\n').collect()
+    }
+
+    /// Number of lines in the input buffer.
+    pub fn input_line_count(&self) -> usize {
+        self.input_buffer.matches('\n').count() + 1
+    }
+
+    /// Ensure input_scroll keeps the cursor visible given max_visible_lines.
+    pub fn ensure_cursor_visible(&mut self, max_lines: usize) {
+        let total = self.input_line_count();
+        let max_scroll = total.saturating_sub(max_lines);
+        self.input_scroll = self.input_scroll.min(max_scroll);
+        let (cursor_row, _) = self.input_cursor_pos();
+        if cursor_row < self.input_scroll {
+            self.input_scroll = cursor_row;
+        } else if cursor_row >= self.input_scroll + max_lines {
+            self.input_scroll = cursor_row - max_lines + 1;
+        }
     }
 
     /// Delete char after cursor.

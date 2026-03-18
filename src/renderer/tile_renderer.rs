@@ -40,12 +40,22 @@ pub fn build_tile_batch(
 
     // ── Layout ──
     let input_padding = 8.0 * s;
-    let input_bar_h = input_padding * 2.0 + cell_h;
     let input_gap = 6.0 * s;
+    let max_input_lines: usize = 5;
+
+    // Base input bar height (1 line) — output area is always calculated from this
+    let base_input_bar_h = input_padding * 2.0 + cell_h;
+
+    // Actual input bar height grows upward based on content
+    let line_count = pane.input_line_count();
+    let visible_lines = line_count.min(max_input_lines).max(1);
+    let input_bar_h = input_padding * 2.0 + visible_lines as f32 * cell_h;
 
     let content_y = ty + bar_h;
-    let output_area_h = th - input_bar_h - input_gap;
-    let input_bar_y = ty + bar_h + output_area_h + input_gap;
+    // Output area stays fixed (based on single-line input)
+    let output_area_h = th - base_input_bar_h - input_gap;
+    // Input bar grows upward from the bottom of the tile
+    let input_bar_y = ty + bar_h + th - input_bar_h;
 
     // 1) Border
     push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
@@ -191,68 +201,95 @@ pub fn build_tile_batch(
     }
 
     // ── Input bar ──
+    // Background to cover output text when input grows upward (inset to preserve rounded corners)
+    if visible_lines > 1 {
+        let extra_h = (visible_lines - 1) as f32 * cell_h;
+        let input_bg_color = theme.background.to_array();
+        let inset = corner_radius;
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            tx + inset, input_bar_y - input_gap,
+            tw - inset * 2.0, extra_h + input_gap, input_bg_color);
+        // Left and right edges (narrower, inside the rounded corners)
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            tx, input_bar_y,
+            inset, extra_h, input_bg_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            tx + tw - inset, input_bar_y,
+            inset, extra_h, input_bg_color);
+    }
+
     // Separator line between output and input
     let sep_color = canvas_theme.tile_border.to_array();
     push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
         tx + padding, input_bar_y - input_gap / 2.0,
         tw - padding * 2.0, bw * 2.0, sep_color);
 
-    // Render input buffer text
+    // Render multiline input buffer text
     let input_text_x = tx + padding;
-    let input_text_y = input_bar_y;
     let fg_color = theme.foreground.to_array();
     let max_x = tx + tw - padding;
+    let input_scroll = pane.input_scroll.min(line_count.saturating_sub(visible_lines));
 
-    let mut char_x = input_text_x;
-    for c in pane.input_buffer.chars() {
-        if char_x + cell_w > max_x { break; }
-        if c != ' ' {
-            let glyph = atlas.get_or_rasterize(c, false, false, gpu_queue);
-            if glyph.width > 0.0 && glyph.height > 0.0 {
-                let gx = char_x + glyph.bearing_x;
-                let gy = input_text_y + (cell_h - glyph.bearing_y);
-                let fg_base = batch.fg_verts.len() as u32;
-                batch.fg_verts.extend_from_slice(&[
-                    TextVertex { position: [gx, gy], tex_coords: [glyph.tex_x, glyph.tex_y], color: fg_color, bg_color: [0.0; 4] },
-                    TextVertex { position: [gx + glyph.width, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: fg_color, bg_color: [0.0; 4] },
-                    TextVertex { position: [gx + glyph.width, gy + glyph.height], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: fg_color, bg_color: [0.0; 4] },
-                    TextVertex { position: [gx, gy + glyph.height], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: fg_color, bg_color: [0.0; 4] },
-                ]);
-                batch.fg_indices.extend_from_slice(&[fg_base, fg_base+1, fg_base+2, fg_base, fg_base+2, fg_base+3]);
+    let lines = pane.input_lines();
+    for (vis_idx, line_idx) in (input_scroll..lines.len().min(input_scroll + max_input_lines)).enumerate() {
+        let line = lines[line_idx];
+        let line_y = input_bar_y + vis_idx as f32 * cell_h;
+        let mut char_x = input_text_x;
+        for c in line.chars() {
+            if char_x + cell_w > max_x { break; }
+            if c != ' ' {
+                let glyph = atlas.get_or_rasterize(c, false, false, gpu_queue);
+                if glyph.width > 0.0 && glyph.height > 0.0 {
+                    let gx = char_x + glyph.bearing_x;
+                    let gy = line_y + (cell_h - glyph.bearing_y);
+                    let fg_base = batch.fg_verts.len() as u32;
+                    batch.fg_verts.extend_from_slice(&[
+                        TextVertex { position: [gx, gy], tex_coords: [glyph.tex_x, glyph.tex_y], color: fg_color, bg_color: [0.0; 4] },
+                        TextVertex { position: [gx + glyph.width, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: fg_color, bg_color: [0.0; 4] },
+                        TextVertex { position: [gx + glyph.width, gy + glyph.height], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: fg_color, bg_color: [0.0; 4] },
+                        TextVertex { position: [gx, gy + glyph.height], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: fg_color, bg_color: [0.0; 4] },
+                    ]);
+                    batch.fg_indices.extend_from_slice(&[fg_base, fg_base+1, fg_base+2, fg_base, fg_base+2, fg_base+3]);
+                }
             }
+            char_x += cell_w;
         }
-        char_x += cell_w;
     }
 
-    // Cursor in input bar
+    // Cursor in input bar (multiline)
     if is_focused {
-        let cursor_col = pane.input_cursor_col();
-        let cursor_x = input_text_x + cursor_col as f32 * cell_w;
-        let cursor_color = theme.cursor.to_array();
+        let (cursor_row, cursor_col) = pane.input_cursor_pos();
+        // Only draw if cursor is in the visible range
+        if cursor_row >= input_scroll && cursor_row < input_scroll + max_input_lines {
+            let vis_row = cursor_row - input_scroll;
+            let cursor_x = input_text_x + cursor_col as f32 * cell_w;
+            let cursor_line_y = input_bar_y + vis_row as f32 * cell_h;
+            let cursor_color = theme.cursor.to_array();
 
-        let beam_width = (cell_w * 0.4).max(4.0);
-        let reduced_h = cell_h * 0.75;
-        let (cw, ch) = match cursor_style {
-            "beam" => (beam_width, reduced_h),
-            "underline" => (cell_w, beam_width),
-            _ => (cell_w, reduced_h),
-        };
-        let cy_offset = match cursor_style {
-            "underline" => cell_h - beam_width,
-            _ => cell_h - ch,
-        };
+            let beam_width = (cell_w * 0.4).max(4.0);
+            let reduced_h = cell_h * 0.75;
+            let (cw, ch) = match cursor_style {
+                "beam" => (beam_width, reduced_h),
+                "underline" => (cell_w, beam_width),
+                _ => (cell_w, reduced_h),
+            };
+            let cy_offset = match cursor_style {
+                "underline" => cell_h - beam_width,
+                _ => cell_h - ch,
+            };
 
-        if pane.cursor_renderer.visible && (!pane.cursor_renderer.blink || pane.cursor_renderer.blink_on()) {
-            let cx = cursor_x;
-            let cy = input_text_y + cy_offset;
-            let cur_base = batch.bg_verts.len() as u32;
-            batch.bg_verts.extend_from_slice(&[
-                TextVertex { position: [cx, cy], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: cursor_color },
-                TextVertex { position: [cx + cw, cy], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: cursor_color },
-                TextVertex { position: [cx + cw, cy + ch], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: cursor_color },
-                TextVertex { position: [cx, cy + ch], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: cursor_color },
-            ]);
-            batch.bg_indices.extend_from_slice(&[cur_base, cur_base+1, cur_base+2, cur_base, cur_base+2, cur_base+3]);
+            if pane.cursor_renderer.visible && (!pane.cursor_renderer.blink || pane.cursor_renderer.blink_on()) {
+                let cx = cursor_x;
+                let cy = cursor_line_y + cy_offset;
+                let cur_base = batch.bg_verts.len() as u32;
+                batch.bg_verts.extend_from_slice(&[
+                    TextVertex { position: [cx, cy], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: cursor_color },
+                    TextVertex { position: [cx + cw, cy], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: cursor_color },
+                    TextVertex { position: [cx + cw, cy + ch], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: cursor_color },
+                    TextVertex { position: [cx, cy + ch], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: cursor_color },
+                ]);
+                batch.bg_indices.extend_from_slice(&[cur_base, cur_base+1, cur_base+2, cur_base, cur_base+2, cur_base+3]);
+            }
         }
     }
 
