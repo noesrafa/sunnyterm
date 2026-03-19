@@ -21,6 +21,8 @@ pub struct TileState {
     pub kind: String,
     #[serde(default)]
     pub http_state: Option<HttpTileState>,
+    #[serde(default)]
+    pub postgres_state: Option<PostgresTileState>,
 }
 
 fn default_kind() -> String {
@@ -33,6 +35,12 @@ pub struct HttpTileState {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresTileState {
+    pub connection_string: String,
+    pub query: String,
 }
 
 impl Default for AppState {

@@ -5,6 +5,7 @@ mod config;
 mod http_pane;
 mod input;
 mod pane;
+mod postgres_pane;
 mod renderer;
 mod state;
 mod terminal;
@@ -203,7 +204,21 @@ impl ApplicationHandler for LumeApp {
                         0
                     };
                     if lines != 0 {
-                        app.scroll(lines);
+                        if app.modifiers.shift_key() {
+                            // Shift+scroll = horizontal scroll
+                            app.scroll_x(-lines);
+                        } else {
+                            app.scroll(lines);
+                        }
+                    }
+                    // Trackpad horizontal scroll
+                    let h_lines = if x_delta.abs() > 0.0 {
+                        (x_delta / 20.0).round() as i32
+                    } else {
+                        0
+                    };
+                    if h_lines != 0 {
+                        app.scroll_x(-h_lines);
                     }
                 } else {
                     // Scroll on empty canvas = pan
@@ -233,6 +248,10 @@ impl ApplicationHandler for LumeApp {
                     AppAction::SpawnHttpTile => {
                         let (cx, cy) = app.screen_to_canvas(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32);
                         app.spawn_http_tile_at(cx, cy);
+                    }
+                    AppAction::SpawnPostgresTile => {
+                        let (cx, cy) = app.screen_to_canvas(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32);
+                        app.spawn_postgres_tile_at(cx, cy);
                     }
                     AppAction::ClosePane => app.close_focused(),
                     AppAction::Quit => {

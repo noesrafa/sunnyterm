@@ -2,6 +2,7 @@
 pub enum TileKind {
     Terminal,
     Http,
+    Postgres,
 }
 
 /// A floating terminal tile on the canvas.
@@ -82,6 +83,17 @@ impl Canvas {
         let http_count = self.tiles.iter().filter(|t| t.kind == TileKind::Http).count();
         let name = format!("HTTP {}", http_count + 1);
         self.tiles.push(Tile { id, x, y, w, h, name, kind: TileKind::Http });
+        self.focus_order.push(id);
+        self.no_focus = false;
+        id
+    }
+
+    pub fn spawn_postgres(&mut self, x: f32, y: f32, w: f32, h: f32) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        let pg_count = self.tiles.iter().filter(|t| t.kind == TileKind::Postgres).count();
+        let name = format!("PostgreSQL {}", pg_count + 1);
+        self.tiles.push(Tile { id, x, y, w, h, name, kind: TileKind::Postgres });
         self.focus_order.push(id);
         self.no_focus = false;
         id

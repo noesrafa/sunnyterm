@@ -10,12 +10,14 @@ use crate::http_pane::HttpPane;
 use crate::input::{completion, keyboard};
 use crate::input::history::CommandHistory;
 use crate::pane::Pane;
-use crate::state::{AppState, HttpTileState, TileState};
+use crate::postgres_pane::PostgresPane;
+use crate::state::{AppState, HttpTileState, PostgresTileState, TileState};
 use crate::renderer::atlas::GlyphAtlas;
 use crate::renderer::draw_helpers::DrawBatch;
 use crate::renderer::gpu::GpuContext;
 use crate::renderer::grid_renderer;
 use crate::renderer::http_tile_renderer;
+use crate::renderer::postgres_tile_renderer;
 use crate::renderer::text::TextVertex;
 use crate::renderer::tile_renderer;
 use crate::renderer::ui_renderer;
@@ -59,6 +61,7 @@ impl Selection {
 pub enum TileContent {
     Terminal(Pane),
     Http(HttpPane),
+    Postgres(PostgresPane),
 }
 
 pub struct App {
@@ -116,6 +119,7 @@ pub enum AppAction {
     None,
     SpawnTile,
     SpawnHttpTile,
+    SpawnPostgresTile,
     ClosePane,
     Quit,
 }
@@ -145,7 +149,7 @@ impl App {
         if !saved.tiles.is_empty() {
             // Restore saved tiles
             for ts in saved.tiles {
-                let kind = if ts.kind == "http" { TileKind::Http } else { TileKind::Terminal };
+                let kind = if ts.kind == "http" { TileKind::Http } else if ts.kind == "postgres" { TileKind::Postgres } else { TileKind::Terminal };
                 let tile_id = canvas.spawn_named(ts.x, ts.y, ts.w, ts.h, ts.name.clone(), kind.clone());
                 match kind {
                     TileKind::Terminal => {
@@ -165,6 +169,16 @@ impl App {
                             http.body_cursor = http.body.len();
                         }
                         panes.insert(tile_id, TileContent::Http(http));
+                    }
+                    TileKind::Postgres => {
+                        let mut pg = PostgresPane::new(config.terminal.cursor_blink);
+                        if let Some(ps) = ts.postgres_state {
+                            pg.connection_string = ps.connection_string;
+                            pg.conn_cursor = pg.connection_string.len();
+                            pg.query = ps.query;
+                            pg.query_cursor = pg.query.len();
+                        }
+                        panes.insert(tile_id, TileContent::Postgres(pg));
                     }
                 }
             }
@@ -372,6 +386,25 @@ impl App {
         self.mark_dirty();
     }
 
+    pub fn spawn_postgres_tile(&mut self) {
+        let size = self.window.inner_size();
+        let view_cx = size.width as f32 / 2.0;
+        let view_cy = size.height as f32 / 2.0;
+        let (cx, cy) = self.screen_to_canvas(view_cx, view_cy);
+        self.spawn_postgres_tile_at(cx, cy);
+    }
+
+    pub fn spawn_postgres_tile_at(&mut self, cx: f32, cy: f32) {
+        let (tw, th) = self.default_tile_size();
+        let x = self.snap_to_grid(cx - tw / 2.0);
+        let y = self.snap_to_grid(cy - th / 2.0);
+
+        let tile_id = self.canvas.spawn_postgres(x, y, tw, th);
+        let pg = PostgresPane::new(self.config.terminal.cursor_blink);
+        self.panes.insert(tile_id, TileContent::Postgres(pg));
+        self.mark_dirty();
+    }
+
     pub fn close_focused(&mut self) {
         if let Some(id) = self.canvas.focused_id() {
             self.close_tile(id);
@@ -510,7 +543,7 @@ impl App {
         let tile = self.canvas.tile(id)?;
         let pane = match self.panes.get(&id)? {
             TileContent::Terminal(p) => p,
-            TileContent::Http(_) => return None,
+            TileContent::Http(_) | TileContent::Postgres(_) => return None,
         };
         let content_y = tile.y + bar_h;
 
@@ -550,7 +583,7 @@ impl App {
         let sel = self.selection.as_ref()?;
         let pane = match self.panes.get(&sel.tile_id)? {
             TileContent::Terminal(p) => p,
-            TileContent::Http(_) => return None,
+            TileContent::Http(_) | TileContent::Postgres(_) => return None,
         };
         let ((sr, sc), (er, ec)) = sel.ordered();
         let mut result = String::new();
@@ -759,6 +792,112 @@ impl App {
                             self.selecting = true;
                         }
                     }
+                    Some(TileContent::Postgres(pg)) => {
+                        let tile = self.canvas.tile(id);
+                        if let Some(tile) = tile {
+                            let s = self.scale_factor;
+                            let bar_h = TITLE_BAR_HEIGHT * s;
+                            let pad = self.config.appearance.padding as f32 * s;
+                            let gap = 8.0 * s;
+                            let cell_w = self.atlas.cell_width;
+                            let cell_h = self.atlas.cell_height;
+                            let field_pad = 8.0 * s;
+                            let field_h = cell_h + field_pad * 2.0;
+                            let content_w = tile.w - pad * 2.0;
+                            let content_x = tile.x + pad;
+
+                            let conn_x = content_x;
+                            let connect_label = if matches!(pg.status, crate::postgres_pane::PgStatus::Connected) { "Connected" } else if matches!(pg.status, crate::postgres_pane::PgStatus::Connecting) { "..." } else { "Connect" };
+                            let connect_btn_w = (connect_label.len() as f32 + 2.0) * cell_w;
+                            let conn_field_w = content_w - gap * 0.5 - connect_btn_w;
+                            let connect_x = conn_x + conn_field_w + gap * 0.5;
+                            let row_top = tile.y + bar_h + pad;
+
+                            // Connect button click
+                            if cx >= connect_x && cx < connect_x + connect_btn_w
+                                && cy >= row_top && cy < row_top + field_h
+                            {
+                                pg.connect();
+                            }
+                            // Connection string field click
+                            else if cx >= conn_x && cx < conn_x + conn_field_w
+                                && cy >= row_top && cy < row_top + field_h
+                            {
+                                pg.focus_field = crate::postgres_pane::PgField::Connection;
+                                let click_col = ((cx - conn_x - field_pad) / cell_w).max(0.0) as usize;
+                                let char_count = pg.connection_string.chars().count();
+                                let target = click_col.min(char_count);
+                                pg.conn_cursor = pg.connection_string.char_indices()
+                                    .nth(target).map(|(i, _)| i).unwrap_or(pg.connection_string.len());
+                                pg.cursor_renderer.reset_blink();
+                            }
+                            // Query area (below first row)
+                            else if cy > row_top + field_h {
+                                let query_label_y = row_top + field_h + gap;
+                                let query_field_y = query_label_y + cell_h + 4.0 * s;
+                                let query_lines_count = if pg.query.is_empty() { 1 } else { pg.query.lines().count().max(1) };
+                                let max_query_lines = 10;
+                                let visible = query_lines_count.min(max_query_lines);
+                                let query_h = visible as f32 * cell_h + field_pad * 2.0;
+                                let query_bottom = query_field_y + query_h;
+
+                                if cy >= query_field_y && cy < query_bottom {
+                                    pg.focus_field = crate::postgres_pane::PgField::Query;
+                                    // Set query cursor based on click position
+                                    let rel_y = cy - query_field_y - field_pad;
+                                    let rel_x = cx - content_x - field_pad;
+                                    if rel_y >= 0.0 && rel_x >= 0.0 {
+                                        let click_row = (rel_y / cell_h) as usize;
+                                        let click_col = (rel_x / cell_w) as usize;
+                                        let lines: Vec<&str> = pg.query.lines().collect();
+                                        if click_row < lines.len() {
+                                            let mut byte_offset = 0;
+                                            for (i, line) in lines.iter().enumerate() {
+                                                if i == click_row {
+                                                    let char_count = line.chars().count();
+                                                    let target = click_col.min(char_count);
+                                                    byte_offset += line.char_indices()
+                                                        .nth(target).map(|(idx, _)| idx).unwrap_or(line.len());
+                                                    break;
+                                                }
+                                                byte_offset += line.len() + 1; // +1 for \n
+                                            }
+                                            pg.query_cursor = byte_offset.min(pg.query.len());
+                                        }
+                                    }
+                                    pg.cursor_renderer.reset_blink();
+                                } else if cy >= query_bottom {
+                                    pg.focus_field = crate::postgres_pane::PgField::Results;
+
+                                    // Check if click is on scrollbars
+                                    let sep_y = query_bottom + gap;
+                                    let results_info_y = sep_y + s + gap;
+                                    let table_top = results_info_y + cell_h + gap * 0.5;
+                                    let results_bottom = tile.y + bar_h + tile.h - pad;
+                                    let table_content_w = content_w - field_pad * 2.0;
+                                    let table_x = content_x + field_pad;
+
+                                    // Vertical scrollbar hit (right edge of table)
+                                    let vbar_x = content_x + content_w - 8.0 * s;
+                                    if cx >= vbar_x && cy >= table_top && cy < results_bottom {
+                                        pg.dragging_scrollbar = Some(crate::postgres_pane::ScrollbarDrag::Vertical {
+                                            start_mouse_y: cy,
+                                            start_scroll: pg.results_scroll,
+                                        });
+                                    }
+                                    // Horizontal scrollbar hit (bottom of table)
+                                    else if cy >= results_bottom - 12.0 * s && cy < results_bottom
+                                        && cx >= table_x && cx < table_x + table_content_w
+                                    {
+                                        pg.dragging_scrollbar = Some(crate::postgres_pane::ScrollbarDrag::Horizontal {
+                                            start_mouse_x: cx,
+                                            start_scroll: pg.results_scroll_x,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
                     None => {}
                 }
             }
@@ -783,6 +922,78 @@ impl App {
         let icon_y = size.height as f32 - margin - btn_size;
         self.stats_hovered = x >= icon_x && x < icon_x + btn_size
             && y >= icon_y && y < icon_y + btn_size;
+
+        // Handle postgres scrollbar drag
+        let canvas_pos = self.screen_to_canvas(x, y);
+        if let Some(id) = self.canvas.focused_id() {
+            // Gather tile info before mutable borrow
+            let tile_info = self.canvas.tile(id).map(|t| (t.x, t.y, t.w, t.h));
+            if let Some(TileContent::Postgres(pg)) = self.panes.get_mut(&id) {
+                if let Some(drag) = pg.dragging_scrollbar {
+                    let (cx, cy) = canvas_pos;
+                    if let Some((tile_x, tile_y, tile_w, tile_h)) = tile_info {
+                        // Build a minimal tile-like struct from cached info
+                        let tile = crate::ui::canvas::Tile {
+                            id, x: tile_x, y: tile_y, w: tile_w, h: tile_h,
+                            name: String::new(), kind: TileKind::Postgres,
+                        };
+                        let s = self.scale_factor;
+                        let bar_h_offset = TITLE_BAR_HEIGHT * s;
+                        let pad = self.config.appearance.padding as f32 * s;
+                        let cell_h = self.atlas.cell_height;
+                        let cell_w = self.atlas.cell_width;
+                        let field_pad = 8.0 * s;
+                        let gap = 8.0 * s;
+                        let field_h = cell_h + field_pad * 2.0;
+                        let content_w = tile.w - pad * 2.0;
+                        let table_content_w = content_w - field_pad * 2.0;
+
+                        // Calculate query area height to find table top
+                        let query_label_y = tile.y + bar_h_offset + pad + field_h + gap;
+                        let query_field_y = query_label_y + cell_h + 4.0 * s;
+                        let query_lines = if pg.query.is_empty() { 1 } else { pg.query.lines().count().max(1) };
+                        let visible_q = query_lines.min(10);
+                        let query_h = visible_q as f32 * cell_h + field_pad * 2.0;
+                        let separator_y = query_field_y + query_h + gap;
+                        let results_info_y = separator_y + s + gap;
+                        let table_top = results_info_y + cell_h + gap * 0.5;
+                        let results_bottom = tile.y + tile.h + bar_h_offset - pad;
+                        let table_h = results_bottom - table_top;
+
+                        match drag {
+                            crate::postgres_pane::ScrollbarDrag::Vertical { start_mouse_y, start_scroll } => {
+                                let margin = 2.0 * s;
+                                let track_h = table_h - margin * 2.0;
+                                let data_lines = 2usize; // header + sep
+                                let data_available = ((table_h - field_pad) / cell_h).max(0.0) as usize;
+                                let data_available = data_available.saturating_sub(data_lines);
+                                let total = pg.rows.len();
+                                let max_scroll = total.saturating_sub(data_available);
+                                if max_scroll > 0 && track_h > 0.0 {
+                                    let dy = cy - start_mouse_y;
+                                    let scroll_per_pixel = max_scroll as f32 / track_h;
+                                    let new_scroll = (start_scroll as f32 + dy * scroll_per_pixel).round();
+                                    pg.results_scroll = (new_scroll as isize).max(0).min(max_scroll as isize) as usize;
+                                }
+                            }
+                            crate::postgres_pane::ScrollbarDrag::Horizontal { start_mouse_x, start_scroll } => {
+                                let scrollable_w = table_content_w - 10.0 * s;
+                                let visible_chars = (table_content_w / cell_w) as usize;
+                                let total_w = pg.total_table_width();
+                                let max_scroll = total_w.saturating_sub(visible_chars);
+                                if max_scroll > 0 && scrollable_w > 0.0 {
+                                    let dx = cx - start_mouse_x;
+                                    let scroll_per_pixel = max_scroll as f32 / scrollable_w;
+                                    let new_scroll = (start_scroll as f32 + dx * scroll_per_pixel).round();
+                                    pg.results_scroll_x = (new_scroll as isize).max(0).min(max_scroll as isize) as usize;
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
 
         if let Some((sx, sy)) = self.panning {
             let dx = (x - sx) / self.canvas_zoom;
@@ -816,6 +1027,12 @@ impl App {
     }
 
     pub fn mouse_up(&mut self) {
+        // Clear postgres scrollbar drag
+        if let Some(id) = self.canvas.focused_id() {
+            if let Some(TileContent::Postgres(pg)) = self.panes.get_mut(&id) {
+                pg.dragging_scrollbar = None;
+            }
+        }
         let had_drag = self.canvas.drag.is_some();
         let had_pan = self.panning.is_some();
         self.panning = None;
@@ -868,7 +1085,32 @@ impl App {
                         }
                     }
                 }
+                Some(TileContent::Postgres(pg)) => {
+                    let max = pg.rows.len().saturating_sub(1);
+                    if delta < 0 {
+                        pg.results_scroll = pg.results_scroll.saturating_add((-delta) as usize).min(max);
+                    } else {
+                        pg.results_scroll = pg.results_scroll.saturating_sub(delta as usize);
+                    }
+                }
                 None => {}
+            }
+        }
+    }
+
+    pub fn scroll_x(&mut self, delta: i32) {
+        if let Some(id) = self.canvas.focused_id() {
+            if let Some(TileContent::Postgres(pg)) = self.panes.get_mut(&id) {
+                let total = pg.total_table_width();
+                let visible = ((self.canvas.tile(id)
+                    .map(|t| t.w - self.config.appearance.padding as f32 * self.scale_factor * 2.0 - 16.0 * self.scale_factor)
+                    .unwrap_or(0.0)) / self.atlas.cell_width) as usize;
+                let max = total.saturating_sub(visible);
+                if delta > 0 {
+                    pg.results_scroll_x = pg.results_scroll_x.saturating_add(delta as usize).min(max);
+                } else {
+                    pg.results_scroll_x = pg.results_scroll_x.saturating_sub((-delta) as usize);
+                }
             }
         }
     }
@@ -933,6 +1175,7 @@ impl App {
             if let Key::Character(ref c) = event.logical_key {
                 match c.as_str() {
                     "N" => return AppAction::SpawnHttpTile,
+                    "P" => return AppAction::SpawnPostgresTile,
                     "n" => return AppAction::SpawnTile,
                     "w" => return AppAction::ClosePane,
                     "q" => return AppAction::Quit,
@@ -962,6 +1205,16 @@ impl App {
                                             }
                                         }
                                         http.cursor_renderer.reset_blink();
+                                    }
+                                    Some(TileContent::Postgres(pg)) => {
+                                        if !pg.try_parse_connection_string(&text) {
+                                            match pg.focus_field {
+                                                crate::postgres_pane::PgField::Connection => pg.insert_at_conn(&text),
+                                                crate::postgres_pane::PgField::Query => pg.insert_at_query(&text),
+                                                _ => {}
+                                            }
+                                        }
+                                        pg.cursor_renderer.reset_blink();
                                     }
                                     None => {}
                                 }
@@ -1014,12 +1267,22 @@ impl App {
             return self.handle_http_key_event(event);
         }
 
+        // Check if focused tile is a Postgres pane
+        let is_postgres = self.canvas.focused_id()
+            .and_then(|id| self.panes.get(&id))
+            .map(|tc| matches!(tc, TileContent::Postgres(_)))
+            .unwrap_or(false);
+
+        if is_postgres {
+            return self.handle_postgres_key_event(event);
+        }
+
         // Alternate screen or passthrough mode: bypass input buffer, send directly to PTY
         let is_passthrough = self.canvas.focused_id()
             .and_then(|id| self.panes.get(&id))
             .map(|tc| match tc {
                 TileContent::Terminal(p) => p.grid.alternate_screen || p.passthrough,
-                TileContent::Http(_) => false,
+                TileContent::Http(_) | TileContent::Postgres(_) => false,
             })
             .unwrap_or(false);
 
@@ -1475,6 +1738,180 @@ impl App {
         AppAction::None
     }
 
+    fn handle_postgres_key_event(&mut self, event: &winit::event::KeyEvent) -> AppAction {
+        use winit::keyboard::{Key, NamedKey};
+        use crate::postgres_pane::PgField;
+
+        let Some(id) = self.canvas.focused_id() else { return AppAction::None };
+        let Some(TileContent::Postgres(pg)) = self.panes.get_mut(&id) else { return AppAction::None };
+
+        let super_key = self.modifiers.super_key();
+        let alt = self.modifiers.alt_key();
+
+        // Cmd shortcuts
+        if super_key {
+            if let Key::Named(NamedKey::Enter) = &event.logical_key {
+                pg.execute_query();
+                return AppAction::None;
+            }
+        }
+
+        // Helper: extract printable text
+        let typed_text: Option<String> = if super_key {
+            None
+        } else if let Key::Character(ref c) = event.logical_key {
+            Some(c.to_string())
+        } else if let Some(ref t) = event.text {
+            let s = t.as_str();
+            if !s.is_empty() && s.chars().all(|c| !c.is_control()) {
+                Some(s.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        match &event.logical_key {
+            Key::Named(NamedKey::Tab) => {
+                pg.focus_field = pg.focus_field.next();
+                pg.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::Escape) => {
+                pg.focus_field = PgField::Connection;
+            }
+            Key::Named(NamedKey::Enter) => {
+                match pg.focus_field {
+                    PgField::Connection => pg.connect(),
+                    PgField::Query => pg.insert_at_query("\n"),
+                    _ => {}
+                }
+                pg.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::Backspace) => {
+                match pg.focus_field {
+                    PgField::Connection => {
+                        if super_key {
+                            pg.connection_string.clear();
+                            pg.conn_cursor = 0;
+                        } else {
+                            pg.backspace_conn();
+                        }
+                    }
+                    PgField::Query => {
+                        if super_key {
+                            pg.query.clear();
+                            pg.query_cursor = 0;
+                        } else {
+                            pg.backspace_query();
+                        }
+                    }
+                    _ => {}
+                }
+                pg.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                match pg.focus_field {
+                    PgField::Query => {
+                        if super_key {
+                            pg.query_cursor = 0;
+                        } else {
+                            pg.move_query_up();
+                        }
+                        pg.cursor_renderer.reset_blink();
+                    }
+                    PgField::Results => {
+                        pg.results_scroll = pg.results_scroll.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                match pg.focus_field {
+                    PgField::Query => {
+                        if super_key {
+                            pg.query_cursor = pg.query.len();
+                        } else {
+                            pg.move_query_down();
+                        }
+                        pg.cursor_renderer.reset_blink();
+                    }
+                    PgField::Results => {
+                        let max = pg.rows.len().saturating_sub(1);
+                        pg.results_scroll = pg.results_scroll.saturating_add(1).min(max);
+                    }
+                    _ => {}
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                match pg.focus_field {
+                    PgField::Connection => {
+                        if super_key {
+                            pg.conn_cursor = 0;
+                        } else if alt {
+                            pg.move_conn_word_left();
+                        } else {
+                            pg.move_conn_left();
+                        }
+                    }
+                    PgField::Query => {
+                        if super_key {
+                            pg.move_query_line_start();
+                        } else if alt {
+                            pg.move_query_word_left();
+                        } else {
+                            pg.move_query_left();
+                        }
+                    }
+                    PgField::Results => {
+                        let step = if super_key { 10 } else { 3 };
+                        pg.results_scroll_x = pg.results_scroll_x.saturating_sub(step);
+                    }
+                }
+                pg.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                match pg.focus_field {
+                    PgField::Connection => {
+                        if super_key {
+                            pg.conn_cursor = pg.connection_string.len();
+                        } else if alt {
+                            pg.move_conn_word_right();
+                        } else {
+                            pg.move_conn_right();
+                        }
+                    }
+                    PgField::Query => {
+                        if super_key {
+                            pg.move_query_line_end();
+                        } else if alt {
+                            pg.move_query_word_right();
+                        } else {
+                            pg.move_query_right();
+                        }
+                    }
+                    PgField::Results => {
+                        let step = if super_key { 10 } else { 3 };
+                        let total = pg.total_table_width();
+                        pg.results_scroll_x = pg.results_scroll_x.saturating_add(step).min(total);
+                    }
+                }
+                pg.cursor_renderer.reset_blink();
+            }
+            _ => {
+                if let Some(ref text) = typed_text {
+                    match pg.focus_field {
+                        PgField::Connection => pg.insert_at_conn(text),
+                        PgField::Query => pg.insert_at_query(text),
+                        _ => {}
+                    }
+                    pg.cursor_renderer.reset_blink();
+                }
+            }
+        }
+        AppAction::None
+    }
+
     pub fn read_all_ptys(&mut self) {
         let mut had_data = false;
         for tc in self.panes.values_mut() {
@@ -1490,6 +1927,14 @@ impl App {
                     let was_loading = http.loading;
                     http.poll_response();
                     if was_loading && !http.loading {
+                        had_data = true;
+                    }
+                }
+                TileContent::Postgres(pg) => {
+                    let was_busy = matches!(pg.status, crate::postgres_pane::PgStatus::Connecting | crate::postgres_pane::PgStatus::Executing);
+                    pg.poll();
+                    let is_busy = matches!(pg.status, crate::postgres_pane::PgStatus::Connecting | crate::postgres_pane::PgStatus::Executing);
+                    if was_busy && !is_busy {
                         had_data = true;
                     }
                 }
@@ -1560,6 +2005,25 @@ impl App {
                     http_tile_renderer::build_http_tile_batch(
                         &tile_clone,
                         http,
+                        &mut self.atlas,
+                        &self.theme,
+                        &canvas_theme,
+                        &self.gpu.queue,
+                        s,
+                        bar_h,
+                        padding,
+                        corner_radius,
+                        is_focused,
+                        is_renaming,
+                        &self.rename_buffer,
+                    )
+                }
+                TileContent::Postgres(pg) => {
+                    pg.cursor_renderer.visible = is_focused;
+                    pg.cursor_renderer.update();
+                    postgres_tile_renderer::build_postgres_tile_batch(
+                        &tile_clone,
+                        pg,
                         &mut self.atlas,
                         &self.theme,
                         &canvas_theme,
@@ -1766,7 +2230,7 @@ impl App {
 
     pub fn save_state(&self) {
         let tiles: Vec<TileState> = self.canvas.tiles.iter().map(|t| {
-            let (kind_str, http_state) = match self.panes.get(&t.id) {
+            let (kind_str, http_state, postgres_state) = match self.panes.get(&t.id) {
                 Some(TileContent::Http(http)) => (
                     "http".to_string(),
                     Some(HttpTileState {
@@ -1775,13 +2239,23 @@ impl App {
                         headers: http.headers.clone(),
                         body: http.body.clone(),
                     }),
+                    None,
                 ),
-                _ => ("terminal".to_string(), None),
+                Some(TileContent::Postgres(pg)) => (
+                    "postgres".to_string(),
+                    None,
+                    Some(PostgresTileState {
+                        connection_string: pg.connection_string.clone(),
+                        query: pg.query.clone(),
+                    }),
+                ),
+                _ => ("terminal".to_string(), None, None),
             };
             TileState {
                 x: t.x, y: t.y, w: t.w, h: t.h, name: t.name.clone(),
                 kind: kind_str,
                 http_state,
+                postgres_state,
             }
         }).collect();
         let state = AppState {
@@ -1809,7 +2283,7 @@ impl App {
         let tile = self.canvas.tile(id)?;
         let pane = match self.panes.get(&id)? {
             TileContent::Terminal(p) => p,
-            TileContent::Http(_) => return None,
+            TileContent::Http(_) | TileContent::Postgres(_) => return None,
         };
 
         let content_y = tile.y + bar_h;
