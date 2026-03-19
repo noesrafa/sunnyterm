@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod http_pane;
 mod input;
 mod pane;
 mod renderer;
@@ -194,8 +195,18 @@ impl ApplicationHandler for LumeApp {
                     let (mx, my) = self.cursor_pos;
                     let step = if y_delta > 0.0 { 0.1 } else { -0.1 };
                     app.zoom_at(mx as f32, my as f32, step);
+                } else if app.cursor_over_tile(self.cursor_pos) {
+                    // Scroll tile content when cursor is over a tile
+                    let lines = if y_delta.abs() > 0.0 {
+                        (y_delta / 20.0).round() as i32
+                    } else {
+                        0
+                    };
+                    if lines != 0 {
+                        app.scroll(lines);
+                    }
                 } else {
-                    // Two-finger trackpad: pan canvas (works everywhere)
+                    // Scroll on empty canvas = pan
                     let dx = x_delta / app.canvas_zoom;
                     let dy = y_delta / app.canvas_zoom;
                     app.canvas_pan.0 -= dx;
@@ -209,8 +220,20 @@ impl ApplicationHandler for LumeApp {
                 app.zoom_at(mx as f32, my as f32, step);
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                // Track space key for space+drag panning
+                if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) = &event.logical_key {
+                    app.space_held = event.state == winit::event::ElementState::Pressed;
+                }
+                if event.state != winit::event::ElementState::Pressed {
+                    // Don't process key releases through handle_key_event
+                    return;
+                }
                 match app.handle_key_event(&event) {
                     AppAction::SpawnTile => app.spawn_tile(),
+                    AppAction::SpawnHttpTile => {
+                        let (cx, cy) = app.screen_to_canvas(self.cursor_pos.0 as f32, self.cursor_pos.1 as f32);
+                        app.spawn_http_tile_at(cx, cy);
+                    }
                     AppAction::ClosePane => app.close_focused(),
                     AppAction::Quit => {
                         if confirm_quit() {

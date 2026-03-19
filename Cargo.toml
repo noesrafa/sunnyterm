@@ -33,11 +33,19 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 anyhow = "1"
 libc = "0.2"
+ureq = "3"
 
 # macOS specifics
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
+
+[package.metadata.bundle]
+name = "SunnyTerm"
+identifier = "com.sunnyterm.app"
+category = "public.app-category.developer-tools"
+short_description = "GPU-accelerated terminal emulator with infinite canvas"
+osx_minimum_system_version = "13.0"
 
 [profile.release]
 opt-level = 3

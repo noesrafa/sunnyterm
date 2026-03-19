@@ -6,18 +6,20 @@ use winit::keyboard::ModifiersState;
 use winit::window::Window;
 
 use crate::config::Config;
+use crate::http_pane::HttpPane;
 use crate::input::{completion, keyboard};
 use crate::input::history::CommandHistory;
 use crate::pane::Pane;
-use crate::state::{AppState, TileState};
+use crate::state::{AppState, HttpTileState, TileState};
 use crate::renderer::atlas::GlyphAtlas;
 use crate::renderer::draw_helpers::DrawBatch;
 use crate::renderer::gpu::GpuContext;
 use crate::renderer::grid_renderer;
+use crate::renderer::http_tile_renderer;
 use crate::renderer::text::TextVertex;
 use crate::renderer::tile_renderer;
 use crate::renderer::ui_renderer;
-use crate::ui::canvas::{Canvas, DragMode, TITLE_BAR_HEIGHT};
+use crate::ui::canvas::{Canvas, DragMode, TileKind, TITLE_BAR_HEIGHT};
 use crate::ui::canvas_theme::CanvasTheme;
 use crate::ui::theme::Theme;
 
@@ -54,6 +56,11 @@ impl Selection {
     }
 }
 
+pub enum TileContent {
+    Terminal(Pane),
+    Http(HttpPane),
+}
+
 pub struct App {
     pub gpu: GpuContext,
     pub atlas: GlyphAtlas,
@@ -62,7 +69,7 @@ pub struct App {
     pub modifiers: ModifiersState,
     pub scale_factor: f32,
 
-    panes: HashMap<usize, Pane>,
+    panes: HashMap<usize, TileContent>,
     pub canvas: Canvas,
     pub canvas_zoom: f32,
     pub canvas_pan: (f32, f32),
@@ -73,6 +80,8 @@ pub struct App {
 
     pub selection: Option<Selection>,
     selecting: bool,
+    stats_hovered: bool,
+    pub space_held: bool,
 
     bg_pipeline: wgpu::RenderPipeline,
     fg_pipeline: wgpu::RenderPipeline,
@@ -106,6 +115,7 @@ fn ortho_pan(width: f32, height: f32, pan_x: f32, pan_y: f32) -> [[f32; 4]; 4] {
 pub enum AppAction {
     None,
     SpawnTile,
+    SpawnHttpTile,
     ClosePane,
     Quit,
 }
@@ -135,11 +145,28 @@ impl App {
         if !saved.tiles.is_empty() {
             // Restore saved tiles
             for ts in saved.tiles {
-                let tile_id = canvas.spawn_named(ts.x, ts.y, ts.w, ts.h, ts.name.clone());
-                let cols = ((ts.w - padding * 2.0) / atlas.cell_width).max(1.0) as usize;
-                let rows = ((ts.h - bar_h - padding * 2.0) / atlas.cell_height).max(1.0) as usize;
-                let pane = Pane::new(&config.terminal.shell, cols, rows, config.terminal.cursor_blink);
-                panes.insert(tile_id, pane);
+                let kind = if ts.kind == "http" { TileKind::Http } else { TileKind::Terminal };
+                let tile_id = canvas.spawn_named(ts.x, ts.y, ts.w, ts.h, ts.name.clone(), kind.clone());
+                match kind {
+                    TileKind::Terminal => {
+                        let cols = ((ts.w - padding * 2.0) / atlas.cell_width).max(1.0) as usize;
+                        let rows = ((ts.h - bar_h - padding * 2.0) / atlas.cell_height).max(1.0) as usize;
+                        let pane = Pane::new(&config.terminal.shell, cols, rows, config.terminal.cursor_blink);
+                        panes.insert(tile_id, TileContent::Terminal(pane));
+                    }
+                    TileKind::Http => {
+                        let mut http = HttpPane::new(config.terminal.cursor_blink);
+                        if let Some(hs) = ts.http_state {
+                            http.method = crate::http_pane::HttpMethod::from_str(&hs.method);
+                            http.url = hs.url;
+                            http.url_cursor = http.url.len();
+                            http.headers = hs.headers;
+                            http.body = hs.body;
+                            http.body_cursor = http.body.len();
+                        }
+                        panes.insert(tile_id, TileContent::Http(http));
+                    }
+                }
             }
             initial_zoom = saved.canvas_zoom;
             initial_pan_x = saved.canvas_pan.0;
@@ -157,9 +184,9 @@ impl App {
             let cols = ((tw - padding * 2.0) / atlas.cell_width).max(1.0) as usize;
             let rows = ((th - bar_h - padding * 2.0) / atlas.cell_height).max(1.0) as usize;
             let pane = Pane::new(&config.terminal.shell, cols, rows, config.terminal.cursor_blink);
-            panes.insert(tile_id, pane);
+            panes.insert(tile_id, TileContent::Terminal(pane));
 
-            initial_zoom = 1.0;
+            initial_zoom = 0.9;
             let view_w = size.width as f32;
             let view_h = size.height as f32;
             let tile_center_x = tx + tw / 2.0;
@@ -266,6 +293,8 @@ impl App {
             is_dark: is_dark_init,
             selection: None,
             selecting: false,
+            stats_hovered: false,
+            space_held: false,
             bg_pipeline, fg_pipeline, rounded_pipeline,
             uniform_bind_group, uniform_buffer, texture_bind_group,
             window,
@@ -302,7 +331,7 @@ impl App {
         let rows = ((th - bar_h - padding * 2.0) / self.atlas.cell_height).max(1.0) as usize;
 
         let pane = Pane::new(&self.config.terminal.shell, cols, rows, self.config.terminal.cursor_blink);
-        self.panes.insert(tile_id, pane);
+        self.panes.insert(tile_id, TileContent::Terminal(pane));
         self.mark_dirty();
     }
 
@@ -320,7 +349,26 @@ impl App {
         let rows = ((th - bar_h - padding * 2.0) / self.atlas.cell_height).max(1.0) as usize;
 
         let pane = Pane::new(&self.config.terminal.shell, cols, rows, self.config.terminal.cursor_blink);
-        self.panes.insert(tile_id, pane);
+        self.panes.insert(tile_id, TileContent::Terminal(pane));
+        self.mark_dirty();
+    }
+
+    pub fn spawn_http_tile(&mut self) {
+        let size = self.window.inner_size();
+        let view_cx = size.width as f32 / 2.0;
+        let view_cy = size.height as f32 / 2.0;
+        let (cx, cy) = self.screen_to_canvas(view_cx, view_cy);
+        self.spawn_http_tile_at(cx, cy);
+    }
+
+    pub fn spawn_http_tile_at(&mut self, cx: f32, cy: f32) {
+        let (tw, th) = self.default_tile_size();
+        let x = self.snap_to_grid(cx - tw / 2.0);
+        let y = self.snap_to_grid(cy - th / 2.0);
+
+        let tile_id = self.canvas.spawn_http(x, y, tw, th);
+        let http = HttpPane::new(self.config.terminal.cursor_blink);
+        self.panes.insert(tile_id, TileContent::Http(http));
         self.mark_dirty();
     }
 
@@ -347,7 +395,7 @@ impl App {
         let bar_h = TITLE_BAR_HEIGHT * self.scale_factor;
         let cols = ((tile.w - padding * 2.0) / self.atlas.cell_width).max(1.0) as usize;
         let rows = ((tile.h - bar_h - padding * 2.0) / self.atlas.cell_height).max(1.0) as usize;
-        if let Some(pane) = self.panes.get_mut(&tile_id) {
+        if let Some(TileContent::Terminal(pane)) = self.panes.get_mut(&tile_id) {
             pane.resize(cols, rows);
         }
     }
@@ -408,7 +456,7 @@ impl App {
         self.gpu.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     }
 
-    /// Check if click hits the zoom buttons. Returns true if handled.
+    /// Check if click hits the zoom buttons or HTTP button. Returns true if handled.
     pub fn check_zoom_buttons(&mut self, x: f32, y: f32) -> bool {
         let s = self.scale_factor;
         let size = self.window.inner_size();
@@ -439,6 +487,15 @@ impl App {
             self.toggle_theme();
             return true;
         }
+
+        // HTTP button (bottom-left, next to info icon)
+        let http_btn_x = margin + btn_w + gap * 2.0;
+        let http_btn_y = size.height as f32 - margin - btn_h;
+        if x >= http_btn_x && x < http_btn_x + btn_w && y >= http_btn_y && y < http_btn_y + btn_h {
+            self.spawn_http_tile();
+            return true;
+        }
+
         false
     }
 
@@ -451,7 +508,10 @@ impl App {
         let cell_h = self.atlas.cell_height;
 
         let tile = self.canvas.tile(id)?;
-        let pane = self.panes.get(&id)?;
+        let pane = match self.panes.get(&id)? {
+            TileContent::Terminal(p) => p,
+            TileContent::Http(_) => return None,
+        };
         let content_y = tile.y + bar_h;
 
         let is_full_grid = pane.grid.alternate_screen || pane.passthrough;
@@ -488,7 +548,10 @@ impl App {
     /// Get the selected text from the terminal grid.
     pub fn selected_text(&self) -> Option<String> {
         let sel = self.selection.as_ref()?;
-        let pane = self.panes.get(&sel.tile_id)?;
+        let pane = match self.panes.get(&sel.tile_id)? {
+            TileContent::Terminal(p) => p,
+            TileContent::Http(_) => return None,
+        };
         let ((sr, sc), (er, ec)) = sel.ordered();
         let mut result = String::new();
         for row in sr..=er {
@@ -526,6 +589,11 @@ impl App {
         if self.check_zoom_buttons(x, y) {
             return;
         }
+        // Space+click = pan anywhere
+        if self.space_held {
+            self.panning = Some((x, y));
+            return;
+        }
         // Clear selection on any new click
         self.selection = None;
         self.selecting = false;
@@ -542,16 +610,156 @@ impl App {
             } else if in_title {
                 self.canvas.start_drag(id, DragMode::Move, cx, cy);
             } else {
-                // Click on content area: start text selection
-                if let Some((row, col)) = self.canvas_to_grid(cx, cy, id) {
-                    self.selection = Some(Selection {
-                        tile_id: id,
-                        start_row: row,
-                        start_col: col,
-                        end_row: row,
-                        end_col: col,
-                    });
-                    self.selecting = true;
+                // Click on content area
+                match self.panes.get_mut(&id) {
+                    Some(TileContent::Http(http)) => {
+                        let tile = self.canvas.tile(id);
+                        if let Some(tile) = tile {
+                            let s = self.scale_factor;
+                            let bar_h = TITLE_BAR_HEIGHT * s;
+                            let pad = self.config.appearance.padding as f32 * s;
+                            let gap = 8.0 * s;
+                            let cell_w = self.atlas.cell_width;
+                            let cell_h = self.atlas.cell_height;
+                            let field_pad = 8.0 * s;
+                            let field_h = cell_h + field_pad * 2.0;
+                            let content_w = tile.w - pad * 2.0;
+                            let content_x = tile.x + pad;
+                            let method_w = (http.method.as_str().len() as f32 + 2.0) * cell_w;
+                            let send_text_len = if http.loading { 3.0 } else { 6.0 }; // "..." or "Enviar"
+                            let send_btn_w = (send_text_len + 2.0) * cell_w;
+                            let curl_btn_w = (4.0 + 1.5) * cell_w; // "cURL"
+                            let url_x = content_x + method_w + gap;
+                            let url_w = content_w - method_w - gap - gap * 0.5 - curl_btn_w - gap * 0.5 - send_btn_w;
+                            let curl_btn_x = url_x + url_w + gap * 0.5;
+                            let send_x = curl_btn_x + curl_btn_w + gap * 0.5;
+                            let row_top = tile.y + bar_h + pad;
+
+                            // Send button
+                            if cx >= send_x && cx < send_x + send_btn_w
+                                && cy >= row_top && cy < row_top + field_h
+                            {
+                                http.send_request();
+                            }
+                            // cURL copy button
+                            else if cx >= curl_btn_x && cx < curl_btn_x + curl_btn_w
+                                && cy >= row_top && cy < row_top + field_h
+                            {
+                                let curl = http.to_curl();
+                                clipboard_write(&curl);
+                                http.show_toast("cURL copied");
+                            }
+                            // Method field
+                            else if cx >= content_x && cx < content_x + method_w
+                                && cy >= row_top && cy < row_top + field_h
+                            {
+                                http.focus_field = crate::http_pane::HttpField::Method;
+                                http.cursor_renderer.reset_blink();
+                            }
+                            // URL field
+                            else if cx >= url_x && cx < url_x + url_w
+                                && cy >= row_top && cy < row_top + field_h
+                            {
+                                http.focus_field = crate::http_pane::HttpField::Url;
+                                // Set cursor position based on click x
+                                let click_col = ((cx - url_x - field_pad) / cell_w).max(0.0) as usize;
+                                let char_count = http.url.chars().count();
+                                let target = click_col.min(char_count);
+                                // Convert char index to byte offset
+                                http.url_cursor = http.url.char_indices()
+                                    .nth(target)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(http.url.len());
+                                http.cursor_renderer.reset_blink();
+                            }
+                            // Below the first row: determine headers vs body vs response
+                            else if cy > row_top + field_h {
+                                let headers_bottom = row_top + field_h + gap
+                                    + cell_h + 4.0 * s  // "Headers (N)" label
+                                    + http.headers.len() as f32 * (cell_h + 2.0 * s)
+                                    + gap * 0.5;
+                                if cy < headers_bottom && !http.headers.is_empty() {
+                                    http.focus_field = crate::http_pane::HttpField::Headers;
+                                    // Determine which header was clicked
+                                    let header_start_y = row_top + field_h + gap + cell_h + 4.0 * s;
+                                    let header_row_h = cell_h + 2.0 * s;
+                                    let clicked_idx = ((cy - header_start_y) / header_row_h) as usize;
+                                    if clicked_idx < http.headers.len() {
+                                        http.header_edit_index = clicked_idx;
+                                        // Figure out if click is on key or value
+                                        let (k, v) = &http.headers[clicked_idx];
+                                        let key_end_col = k.chars().count() + 1; // "key:"
+                                        let val_start_col = key_end_col + 1; // "key: "
+                                        let text_x = tile.x + pad + 6.0 * s;
+                                        let click_col = ((cx - text_x) / cell_w).max(0.0) as usize;
+                                        if click_col < key_end_col {
+                                            http.header_edit_field = 0;
+                                            let target = click_col.min(k.chars().count());
+                                            http.header_cursor = k.char_indices()
+                                                .nth(target).map(|(i, _)| i).unwrap_or(k.len());
+                                        } else {
+                                            http.header_edit_field = 1;
+                                            let target = click_col.saturating_sub(val_start_col).min(v.chars().count());
+                                            http.header_cursor = v.char_indices()
+                                                .nth(target).map(|(i, _)| i).unwrap_or(v.len());
+                                        }
+                                    }
+                                } else {
+                                    if http.response_status.is_some() {
+                                        http.focus_field = crate::http_pane::HttpField::Response;
+                                        // Tab clicks: Copy Raw Tree
+                                        let tab_copy = "Copy";
+                                        let tab_raw = "Raw";
+                                        let tab_tree = "Tree";
+                                        let total_tabs = (tab_copy.len() + 2 + tab_raw.len() + 2 + tab_tree.len()) as f32 * cell_w;
+                                        let tab_copy_x = content_x + content_w - total_tabs;
+                                        let tab_raw_x = tab_copy_x + (tab_copy.len() as f32 + 2.0) * cell_w;
+                                        let tab_tree_x = tab_raw_x + (tab_raw.len() as f32 + 2.0) * cell_w;
+                                        if cx >= tab_copy_x && cx < tab_copy_x + tab_copy.len() as f32 * cell_w {
+                                            let body = http.response_body.clone();
+                                            clipboard_write(&body);
+                                            http.show_toast("Response copied");
+                                        } else if cx >= tab_raw_x && cx < tab_raw_x + tab_raw.len() as f32 * cell_w {
+                                            http.response_view = crate::http_pane::ResponseView::Raw;
+                                        } else if cx >= tab_tree_x && cx < tab_tree_x + tab_tree.len() as f32 * cell_w {
+                                            http.response_view = crate::http_pane::ResponseView::Tree;
+                                        }
+                                        // Tree arrow toggle
+                                        if http.response_view == crate::http_pane::ResponseView::Tree {
+                                            let tree_lines = http.build_tree_lines();
+                                            let indent_w = 2.0 * cell_w;
+                                            for tl in &tree_lines {
+                                                if tl.is_expandable {
+                                                    let indent = content_x + field_pad + tl.depth as f32 * indent_w;
+                                                    if cx >= indent && cx < indent + cell_w + 2.0 * s {
+                                                        let path = tl.path.clone();
+                                                        http.toggle_tree_node(&path);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else if !http.body.is_empty() {
+                                        http.focus_field = crate::http_pane::HttpField::Body;
+                                    }
+                                }
+                                http.cursor_renderer.reset_blink();
+                            }
+                        }
+                    }
+                    Some(TileContent::Terminal(_)) => {
+                        if let Some((row, col)) = self.canvas_to_grid(cx, cy, id) {
+                            self.selection = Some(Selection {
+                                tile_id: id,
+                                start_row: row,
+                                start_col: col,
+                                end_row: row,
+                                end_col: col,
+                            });
+                            self.selecting = true;
+                        }
+                    }
+                    None => {}
                 }
             }
         } else {
@@ -565,6 +773,16 @@ impl App {
     }
 
     pub fn mouse_move(&mut self, x: f32, y: f32) {
+        // Update stats hover state
+        let s = self.scale_factor;
+        let size = self.window.inner_size();
+        let margin = 16.0 * s;
+        let btn_size = 32.0 * s;
+        let icon_x = margin;
+        let icon_y = size.height as f32 - margin - btn_size;
+        self.stats_hovered = x >= icon_x && x < icon_x + btn_size
+            && y >= icon_y && y < icon_y + btn_size;
+
         if let Some((sx, sy)) = self.panning {
             let dx = (x - sx) / self.canvas_zoom;
             let dy = (y - sy) / self.canvas_zoom;
@@ -628,8 +846,28 @@ impl App {
 
     pub fn scroll(&mut self, delta: i32) {
         if let Some(id) = self.canvas.focused_id() {
-            if let Some(pane) = self.panes.get_mut(&id) {
-                pane.grid.scroll_viewport(delta);
+            match self.panes.get_mut(&id) {
+                Some(TileContent::Terminal(pane)) => {
+                    pane.grid.scroll_viewport(delta);
+                }
+                Some(TileContent::Http(http)) => {
+                    if http.response_view == crate::http_pane::ResponseView::Tree {
+                        let tree_total = http.build_tree_lines().len().saturating_sub(1);
+                        if delta < 0 {
+                            http.tree_scroll = http.tree_scroll.saturating_add((-delta) as usize).min(tree_total);
+                        } else {
+                            http.tree_scroll = http.tree_scroll.saturating_sub(delta as usize);
+                        }
+                    } else {
+                        let max = http.response_line_count().saturating_sub(1);
+                        if delta < 0 {
+                            http.scroll_offset = http.scroll_offset.saturating_add((-delta) as usize).min(max);
+                        } else {
+                            http.scroll_offset = http.scroll_offset.saturating_sub(delta as usize);
+                        }
+                    }
+                }
+                None => {}
             }
         }
     }
@@ -693,6 +931,7 @@ impl App {
         if self.modifiers.super_key() {
             if let Key::Character(ref c) = event.logical_key {
                 match c.as_str() {
+                    "N" => return AppAction::SpawnHttpTile,
                     "n" => return AppAction::SpawnTile,
                     "w" => return AppAction::ClosePane,
                     "q" => return AppAction::Quit,
@@ -702,13 +941,28 @@ impl App {
                         let content = clipboard_read().or_else(clipboard_read_image);
                         if let Some(text) = content {
                             if let Some(id) = self.canvas.focused_id() {
-                                if let Some(pane) = self.panes.get_mut(&id) {
-                                    if pane.grid.alternate_screen || pane.passthrough {
-                                        let _ = pane.pty.write(text.as_bytes());
-                                    } else {
-                                        pane.input_insert(&text);
+                                match self.panes.get_mut(&id) {
+                                    Some(TileContent::Terminal(pane)) => {
+                                        if pane.grid.alternate_screen || pane.passthrough {
+                                            let _ = pane.pty.write(text.as_bytes());
+                                        } else {
+                                            pane.input_insert(&text);
+                                        }
+                                        pane.cursor_renderer.reset_blink();
                                     }
-                                    pane.cursor_renderer.reset_blink();
+                                    Some(TileContent::Http(http)) => {
+                                        // Try parsing as curl command first
+                                        if !http.try_parse_curl(&text) {
+                                            match http.focus_field {
+                                                crate::http_pane::HttpField::Url => http.insert_at_url(&text),
+                                                crate::http_pane::HttpField::Body => http.insert_at_body(&text),
+                                                crate::http_pane::HttpField::Headers => http.insert_at_header(&text),
+                                                _ => {}
+                                            }
+                                        }
+                                        http.cursor_renderer.reset_blink();
+                                    }
+                                    None => {}
                                 }
                             }
                         }
@@ -728,16 +982,29 @@ impl App {
             }
         }
 
+        // Check if focused tile is an HTTP pane
+        let is_http = self.canvas.focused_id()
+            .and_then(|id| self.panes.get(&id))
+            .map(|tc| matches!(tc, TileContent::Http(_)))
+            .unwrap_or(false);
+
+        if is_http {
+            return self.handle_http_key_event(event);
+        }
+
         // Alternate screen or passthrough mode: bypass input buffer, send directly to PTY
         let is_passthrough = self.canvas.focused_id()
             .and_then(|id| self.panes.get(&id))
-            .map(|p| p.grid.alternate_screen || p.passthrough)
+            .map(|tc| match tc {
+                TileContent::Terminal(p) => p.grid.alternate_screen || p.passthrough,
+                TileContent::Http(_) => false,
+            })
             .unwrap_or(false);
 
         if is_passthrough {
             if let Some(bytes) = keyboard::key_to_pty_bytes(event, self.modifiers) {
                 if let Some(id) = self.canvas.focused_id() {
-                    if let Some(pane) = self.panes.get_mut(&id) {
+                    if let Some(TileContent::Terminal(pane)) = self.panes.get_mut(&id) {
                         let _ = pane.pty.write(&bytes);
                         pane.cursor_renderer.reset_blink();
                     }
@@ -752,7 +1019,7 @@ impl App {
         let super_key = self.modifiers.super_key();
 
         if let Some(id) = self.canvas.focused_id() {
-            if let Some(pane) = self.panes.get_mut(&id) {
+            if let Some(TileContent::Terminal(pane)) = self.panes.get_mut(&id) {
                 // Cancel completion on any non-Tab key
                 let is_tab = matches!(&event.logical_key, Key::Named(NamedKey::Tab));
                 if !is_tab {
@@ -908,13 +1175,302 @@ impl App {
         AppAction::None
     }
 
+    fn handle_http_key_event(&mut self, event: &winit::event::KeyEvent) -> AppAction {
+        use winit::keyboard::{Key, NamedKey};
+        use crate::http_pane::HttpField;
+
+        let Some(id) = self.canvas.focused_id() else { return AppAction::None };
+        let Some(TileContent::Http(http)) = self.panes.get_mut(&id) else { return AppAction::None };
+
+        let super_key = self.modifiers.super_key();
+        let alt = self.modifiers.alt_key();
+
+        // Cmd shortcuts
+        if super_key {
+            if let Key::Named(NamedKey::Enter) = &event.logical_key {
+                http.send_request();
+                return AppAction::None;
+            }
+            if let Key::Character(ref c) = event.logical_key {
+                if c.as_str() == "f" {
+                    // Cmd+F: toggle search
+                    if http.search_active && http.focus_field == HttpField::Search {
+                        http.search_active = false;
+                        http.focus_field = HttpField::Response;
+                    } else {
+                        http.toggle_search();
+                        http.focus_field = HttpField::Search;
+                    }
+                    return AppAction::None;
+                }
+                if c.as_str() == "g" {
+                    // Cmd+G: next match, Cmd+Shift+G would need "G"
+                    http.search_next();
+                    return AppAction::None;
+                }
+            }
+        }
+
+        // Helper: extract printable text from event (handles dead keys, non-US layouts)
+        let typed_text: Option<String> = if super_key {
+            None
+        } else if let Key::Character(ref c) = event.logical_key {
+            Some(c.to_string())
+        } else if let Some(ref t) = event.text {
+            let s = t.as_str();
+            if !s.is_empty() && s.chars().all(|c| !c.is_control()) {
+                Some(s.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Search mode input
+        if http.focus_field == HttpField::Search {
+            match &event.logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    http.search_active = false;
+                    http.focus_field = HttpField::Response;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if self.modifiers.shift_key() {
+                        http.search_prev();
+                    } else {
+                        http.search_next();
+                    }
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    http.search_backspace();
+                    http.cursor_renderer.reset_blink();
+                }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    http.search_move_left();
+                    http.cursor_renderer.reset_blink();
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    http.search_move_right();
+                    http.cursor_renderer.reset_blink();
+                }
+                Key::Named(NamedKey::ArrowUp) => http.search_prev(),
+                Key::Named(NamedKey::ArrowDown) => http.search_next(),
+                _ => {
+                    if let Some(ref text) = typed_text {
+                        http.search_insert(text);
+                        http.cursor_renderer.reset_blink();
+                    }
+                }
+            }
+            return AppAction::None;
+        }
+
+        match &event.logical_key {
+            Key::Named(NamedKey::Tab) => {
+                http.focus_field = http.focus_field.next();
+                http.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::Escape) => {
+                if http.search_active {
+                    http.search_active = false;
+                }
+                http.focus_field = HttpField::Url;
+            }
+            Key::Named(NamedKey::Enter) => {
+                match http.focus_field {
+                    HttpField::Url => http.send_request(),
+                    HttpField::Body => http.insert_at_body("\n"),
+                    HttpField::Headers => {
+                        http.add_header();
+                    }
+                    _ => {}
+                }
+                http.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::Backspace) => {
+                match http.focus_field {
+                    HttpField::Url => {
+                        if super_key {
+                            http.url.clear();
+                            http.url_cursor = 0;
+                        } else {
+                            http.backspace_url();
+                        }
+                    }
+                    HttpField::Body => {
+                        if super_key {
+                            http.body.clear();
+                            http.body_cursor = 0;
+                        } else {
+                            http.backspace_body();
+                        }
+                    }
+                    HttpField::Headers => http.backspace_header(),
+                    _ => {}
+                }
+                http.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                match http.focus_field {
+                    HttpField::Method => http.method = http.method.prev(),
+                    HttpField::Body => {
+                        if super_key {
+                            http.body_cursor = 0;
+                        } else {
+                            http.move_body_up();
+                        }
+                        http.cursor_renderer.reset_blink();
+                    }
+                    HttpField::Response => {
+                        http.scroll_offset = http.scroll_offset.saturating_sub(1);
+                    }
+                    HttpField::Headers => {
+                        if http.header_edit_index > 0 {
+                            http.header_edit_index -= 1;
+                            let s = if http.header_edit_field == 0 {
+                                &http.headers[http.header_edit_index].0
+                            } else {
+                                &http.headers[http.header_edit_index].1
+                            };
+                            http.header_cursor = http.header_cursor.min(s.len());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                match http.focus_field {
+                    HttpField::Method => http.method = http.method.next(),
+                    HttpField::Body => {
+                        if super_key {
+                            http.body_cursor = http.body.len();
+                        } else {
+                            http.move_body_down();
+                        }
+                        http.cursor_renderer.reset_blink();
+                    }
+                    HttpField::Response => {
+                        let max = http.response_line_count().saturating_sub(1);
+                        http.scroll_offset = (http.scroll_offset + 1).min(max);
+                    }
+                    HttpField::Headers => {
+                        if http.header_edit_index + 1 < http.headers.len() {
+                            http.header_edit_index += 1;
+                            let s = if http.header_edit_field == 0 {
+                                &http.headers[http.header_edit_index].0
+                            } else {
+                                &http.headers[http.header_edit_index].1
+                            };
+                            http.header_cursor = http.header_cursor.min(s.len());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                match http.focus_field {
+                    HttpField::Url => {
+                        if super_key {
+                            http.url_cursor = 0;
+                        } else if alt {
+                            http.move_url_word_left();
+                        } else {
+                            http.move_url_left();
+                        }
+                    }
+                    HttpField::Body => {
+                        if super_key {
+                            http.move_body_line_start();
+                        } else if alt {
+                            http.move_body_word_left();
+                        } else {
+                            http.move_body_left();
+                        }
+                    }
+                    HttpField::Headers => {
+                        if super_key {
+                            http.header_cursor = 0;
+                        } else {
+                            http.move_header_left();
+                        }
+                    }
+                    _ => {}
+                }
+                http.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                match http.focus_field {
+                    HttpField::Url => {
+                        if super_key {
+                            http.url_cursor = http.url.len();
+                        } else if alt {
+                            http.move_url_word_right();
+                        } else {
+                            http.move_url_right();
+                        }
+                    }
+                    HttpField::Body => {
+                        if super_key {
+                            http.move_body_line_end();
+                        } else if alt {
+                            http.move_body_word_right();
+                        } else {
+                            http.move_body_right();
+                        }
+                    }
+                    HttpField::Headers => {
+                        if alt || super_key {
+                            // Jump to end of current field
+                            let s = http.current_header_str();
+                            http.header_cursor = s.len();
+                        } else {
+                            http.move_header_right();
+                        }
+                    }
+                    _ => {}
+                }
+                http.cursor_renderer.reset_blink();
+            }
+            Key::Named(NamedKey::Delete) => {
+                if http.focus_field == HttpField::Headers {
+                    http.delete_current_header();
+                } else {
+                    return AppAction::ClosePane;
+                }
+            }
+            _ => {
+                if let Some(ref text) = typed_text {
+                    match http.focus_field {
+                        HttpField::Url => http.insert_at_url(text),
+                        HttpField::Body => http.insert_at_body(text),
+                        HttpField::Headers => http.insert_at_header(text),
+                        _ => {}
+                    }
+                    http.cursor_renderer.reset_blink();
+                }
+            }
+        }
+        AppAction::None
+    }
+
     pub fn read_all_ptys(&mut self) {
         let mut had_data = false;
-        for pane in self.panes.values_mut() {
-            let before = pane.grid.dirty;
-            pane.read_pty();
-            if pane.grid.dirty && !before {
-                had_data = true;
+        for tc in self.panes.values_mut() {
+            match tc {
+                TileContent::Terminal(pane) => {
+                    let before = pane.grid.dirty;
+                    pane.read_pty();
+                    if pane.grid.dirty && !before {
+                        had_data = true;
+                    }
+                }
+                TileContent::Http(http) => {
+                    let was_loading = http.loading;
+                    http.poll_response();
+                    if was_loading && !http.loading {
+                        had_data = true;
+                    }
+                }
             }
         }
         if had_data {
@@ -949,29 +1505,53 @@ impl App {
                 w: tile.w,
                 h: tile.h,
                 name: tile.name.clone(),
+                kind: tile.kind.clone(),
             };
-            let Some(pane) = self.panes.get_mut(&tile_id) else { continue };
+            let Some(tc) = self.panes.get_mut(&tile_id) else { continue };
             let is_focused = Some(tile_id) == focused_id;
             let is_renaming = self.renaming && is_focused;
 
-            let tile_selection = self.selection.as_ref().filter(|sel| sel.tile_id == tile_id);
-            let batch = tile_renderer::build_tile_batch(
-                &tile_clone,
-                pane,
-                &mut self.atlas,
-                &self.theme,
-                &canvas_theme,
-                &self.gpu.queue,
-                s,
-                bar_h,
-                padding,
-                corner_radius,
-                is_focused,
-                is_renaming,
-                &self.rename_buffer,
-                &self.config.terminal.cursor_style,
-                tile_selection,
-            );
+            let batch = match tc {
+                TileContent::Terminal(pane) => {
+                    let tile_selection = self.selection.as_ref().filter(|sel| sel.tile_id == tile_id);
+                    tile_renderer::build_tile_batch(
+                        &tile_clone,
+                        pane,
+                        &mut self.atlas,
+                        &self.theme,
+                        &canvas_theme,
+                        &self.gpu.queue,
+                        s,
+                        bar_h,
+                        padding,
+                        corner_radius,
+                        is_focused,
+                        is_renaming,
+                        &self.rename_buffer,
+                        &self.config.terminal.cursor_style,
+                        tile_selection,
+                    )
+                }
+                TileContent::Http(http) => {
+                    http.cursor_renderer.visible = is_focused;
+                    http.cursor_renderer.update();
+                    http_tile_renderer::build_http_tile_batch(
+                        &tile_clone,
+                        http,
+                        &mut self.atlas,
+                        &self.theme,
+                        &canvas_theme,
+                        &self.gpu.queue,
+                        s,
+                        bar_h,
+                        padding,
+                        corner_radius,
+                        is_focused,
+                        is_renaming,
+                        &self.rename_buffer,
+                    )
+                }
+            };
             tile_draws.push(batch);
         }
 
@@ -985,6 +1565,24 @@ impl App {
             s,
             &canvas_theme,
         );
+
+        // Build toast overlays (rendered last, on top of everything)
+        let mut toast_draws: Vec<DrawBatch> = Vec::new();
+        for &tile_id in &draw_order {
+            if let Some(TileContent::Http(http)) = self.panes.get(&tile_id) {
+                if http.toast_visible() {
+                    if let Some(tile) = self.canvas.tile(tile_id) {
+                        if let Some(toast_batch) = http_tile_renderer::build_toast_batch(
+                            http, tile.x, tile.y, tile.w,
+                            &mut self.atlas, &self.theme, &canvas_theme,
+                            &self.gpu.queue, s, bar_h, padding,
+                        ) {
+                            toast_draws.push(toast_batch);
+                        }
+                    }
+                }
+            }
+        }
 
         // Build UI batch
         ui_renderer::update_stats();
@@ -1000,6 +1598,7 @@ impl App {
             self.gpu.surface_config.height as f32,
             s,
             tile_count,
+            self.stats_hovered,
         );
 
         // GPU draw
@@ -1099,6 +1698,30 @@ impl App {
                 pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..ui_batch.fg_indices.len() as u32, 0, 0..1);
             }
+
+            // Toast overlays (drawn last = always on top)
+            for toast in &toast_draws {
+                if !toast.rounded_indices.is_empty() {
+                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&toast.rounded_verts), usage: wgpu::BufferUsages::VERTEX });
+                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&toast.rounded_indices), usage: wgpu::BufferUsages::INDEX });
+                    pass.set_pipeline(&self.rounded_pipeline);
+                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                    pass.set_bind_group(1, &self.texture_bind_group, &[]);
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..toast.rounded_indices.len() as u32, 0, 0..1);
+                }
+                if !toast.fg_indices.is_empty() {
+                    let vb = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&toast.fg_verts), usage: wgpu::BufferUsages::VERTEX });
+                    let ib = self.gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&toast.fg_indices), usage: wgpu::BufferUsages::INDEX });
+                    pass.set_pipeline(&self.fg_pipeline);
+                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                    pass.set_bind_group(1, &self.texture_bind_group, &[]);
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..toast.fg_indices.len() as u32, 0, 0..1);
+                }
+            }
         }
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -1121,8 +1744,22 @@ impl App {
 
     pub fn save_state(&self) {
         let tiles: Vec<TileState> = self.canvas.tiles.iter().map(|t| {
+            let (kind_str, http_state) = match self.panes.get(&t.id) {
+                Some(TileContent::Http(http)) => (
+                    "http".to_string(),
+                    Some(HttpTileState {
+                        method: http.method.as_str().to_string(),
+                        url: http.url.clone(),
+                        headers: http.headers.clone(),
+                        body: http.body.clone(),
+                    }),
+                ),
+                _ => ("terminal".to_string(), None),
+            };
             TileState {
                 x: t.x, y: t.y, w: t.w, h: t.h, name: t.name.clone(),
+                kind: kind_str,
+                http_state,
             }
         }).collect();
         let state = AppState {
@@ -1148,7 +1785,10 @@ impl App {
         if in_title { return None; }
 
         let tile = self.canvas.tile(id)?;
-        let pane = self.panes.get(&id)?;
+        let pane = match self.panes.get(&id)? {
+            TileContent::Terminal(p) => p,
+            TileContent::Http(_) => return None,
+        };
 
         let content_y = tile.y + bar_h;
 

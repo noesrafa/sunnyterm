@@ -73,14 +73,27 @@ pub fn build_tile_batch(
     push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
         tx, ty, tw, bar_h, tw, total_h, corner_radius, bar_color);
 
-    // Resize handle
-    let handle_size = 8.0 * s;
-    push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
-        tx + tw - handle_size - 2.0 * s, ty + total_h - 3.0 * s,
-        handle_size, bw, border_color);
-    push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
-        tx + tw - 3.0 * s, ty + total_h - handle_size - 2.0 * s,
-        bw, handle_size, border_color);
+    // Resize handle — diagonal grip lines
+    {
+        let grip_color = [border_color[0], border_color[1], border_color[2],
+            (border_color[3] * 1.8).min(1.0)];
+        let line_w = 1.5 * s;
+        let margin = 4.0 * s;
+        let corner_x = tx + tw - margin;
+        let corner_y = ty + total_h - margin;
+        // 3 diagonal lines from bottom-right corner
+        for i in 0..3 {
+            let offset = (i as f32 + 1.0) * 5.0 * s;
+            let len_steps = 4i32;
+            for step in 0..=len_steps {
+                let t = step as f32 / len_steps as f32;
+                let px = corner_x - offset * t;
+                let py = corner_y - offset * (1.0 - t);
+                push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+                    px - line_w * 0.5, py - line_w * 0.5, line_w, line_w, grip_color);
+            }
+        }
+    }
 
     // Active indicator dot (blue with lighter border, left of title)
     if is_focused {

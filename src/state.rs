@@ -10,13 +10,29 @@ pub struct AppState {
     pub tiles: Vec<TileState>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TileState {
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
     pub name: String,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub http_state: Option<HttpTileState>,
+}
+
+fn default_kind() -> String {
+    "terminal".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpTileState {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
 }
 
 impl Default for AppState {

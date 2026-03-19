@@ -4,5 +4,6 @@ pub mod text;
 pub mod cursor;
 pub mod draw_helpers;
 pub mod tile_renderer;
+pub mod http_tile_renderer;
 pub mod ui_renderer;
 pub mod grid_renderer;

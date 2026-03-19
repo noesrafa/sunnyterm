@@ -14,6 +14,7 @@ pub fn build_ui_batch(
     surface_height: f32,
     scale_factor: f32,
     tile_count: usize,
+    stats_hovered: bool,
 ) -> DrawBatch {
     let s = scale_factor;
     let z = 1.0 / zoom; // scale factor for UI elements
@@ -135,50 +136,115 @@ pub fn build_ui_batch(
         lx += char_w;
     }
 
-    // ── Stats pill (bottom-left corner) ──
+    // ── HTTP button (bottom-left, next to info icon) ──
     {
-        let stats = CACHED_STATS.with(|c| c.borrow().clone());
-        let label = format!("{} tiles  {}  {}", tile_count, stats.cpu, stats.mem);
-        let char_w = atlas.cell_width * z;
-        let char_h = atlas.cell_height * z;
-        let pad_x = 10.0 * s * z;
-        let pad_y = 6.0 * s * z;
-        let pill_w = pad_x * 2.0 + label.len() as f32 * char_w;
-        let pill_h = pad_y * 2.0 + char_h;
-        let pill_x = pan.0 + margin;
-        let pill_y = sh - margin - pill_h;
+        let icon_size = btn_w;
+        let http_x = pan.0 + margin + icon_size + gap * 2.0;
+        let http_y = sh - margin - icon_size;
 
-        // Border
+        // Border + background
         push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
-            pill_x - bw, pill_y - bw, pill_w + bw * 2.0, pill_h + bw * 2.0,
-            pill_w + bw * 2.0, pill_h + bw * 2.0, radius + bw, btn_border);
-        // Background
+            http_x - bw, http_y - bw, icon_size + bw * 2.0, icon_size + bw * 2.0,
+            icon_size + bw * 2.0, icon_size + bw * 2.0, radius + bw, btn_border);
         push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
-            pill_x, pill_y, pill_w, pill_h, pill_w, pill_h, radius, btn_bg);
+            http_x, http_y, icon_size, icon_size, icon_size, icon_size, radius, btn_bg);
 
-        // Text
-        let label_color = canvas_theme.label.to_array();
-        let mut lx = pill_x + pad_x;
-        let ly = pill_y + pad_y;
-        for c in label.chars() {
-            if c != ' ' {
-                let glyph = atlas.get_or_rasterize_ui(c, gpu_queue);
-                if glyph.width > 0.0 && glyph.height > 0.0 {
-                    let gw = glyph.width * z;
-                    let gh = glyph.height * z;
-                    let gx = lx + glyph.bearing_x * z;
-                    let gy = ly + (char_h - glyph.bearing_y * z);
-                    let base = batch.fg_verts.len() as u32;
-                    batch.fg_verts.extend_from_slice(&[
-                        TextVertex { position: [gx, gy], tex_coords: [glyph.tex_x, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
-                        TextVertex { position: [gx + gw, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
-                        TextVertex { position: [gx + gw, gy + gh], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
-                        TextVertex { position: [gx, gy + gh], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
-                    ]);
-                    batch.fg_indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
+        // HTTP icon: draw "{}" braces
+        let hcx = http_x + icon_size / 2.0;
+        let hcy = http_y + icon_size / 2.0;
+        let http_icon_color = [0.9, 0.5, 0.2, 1.0]; // orange to match HTTP tile dot
+        let brace_h = 10.0 * s * z;
+        let brace_w = 2.0 * s * z;
+        let brace_offset = 5.0 * s * z;
+        let hook_w = 3.0 * s * z;
+        // Left brace {
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            hcx - brace_offset, hcy - brace_h / 2.0, brace_w, brace_h, http_icon_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            hcx - brace_offset, hcy - brace_h / 2.0, hook_w, line_w, http_icon_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            hcx - brace_offset, hcy + brace_h / 2.0 - line_w, hook_w, line_w, http_icon_color);
+        // Right brace }
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            hcx + brace_offset - brace_w, hcy - brace_h / 2.0, brace_w, brace_h, http_icon_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            hcx + brace_offset - hook_w, hcy - brace_h / 2.0, hook_w, line_w, http_icon_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            hcx + brace_offset - hook_w, hcy + brace_h / 2.0 - line_w, hook_w, line_w, http_icon_color);
+    }
+
+    // ── Stats info icon (bottom-left corner) ──
+    {
+        let icon_size = btn_w; // same size as other buttons
+        let icon_x = pan.0 + margin;
+        let icon_y = sh - margin - icon_size;
+
+        // Icon button: border + background
+        push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+            icon_x - bw, icon_y - bw, icon_size + bw * 2.0, icon_size + bw * 2.0,
+            icon_size + bw * 2.0, icon_size + bw * 2.0, radius + bw, btn_border);
+        push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+            icon_x, icon_y, icon_size, icon_size, icon_size, icon_size, radius, btn_bg);
+
+        // "i" icon: dot + vertical bar
+        let icx = icon_x + icon_size / 2.0;
+        let icy = icon_y + icon_size / 2.0;
+        let dot_r = 1.5 * s * z;
+        // dot
+        push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+            icx - dot_r, icy - 7.0 * s * z, dot_r * 2.0, dot_r * 2.0,
+            dot_r * 2.0, dot_r * 2.0, dot_r, icon_color);
+        // stem
+        let stem_h = 8.0 * s * z;
+        let stem_w = line_w;
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            icx - stem_w / 2.0, icy - 2.0 * s * z, stem_w, stem_h, icon_color);
+
+        // ── Tooltip on hover ──
+        if stats_hovered {
+            let stats = CACHED_STATS.with(|c| c.borrow().clone());
+            let label = format!("{} tiles  {}  {}", tile_count, stats.cpu, stats.mem);
+            let char_w = atlas.cell_width * z;
+            let char_h = atlas.cell_height * z;
+            let pad_x = 10.0 * s * z;
+            let pad_y = 6.0 * s * z;
+            let pill_w = pad_x * 2.0 + label.len() as f32 * char_w;
+            let pill_h = pad_y * 2.0 + char_h;
+            let pill_x = icon_x + icon_size + 8.0 * s * z;
+            let pill_y = icon_y + (icon_size - pill_h) / 2.0;
+
+            // Border
+            push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+                pill_x - bw, pill_y - bw, pill_w + bw * 2.0, pill_h + bw * 2.0,
+                pill_w + bw * 2.0, pill_h + bw * 2.0, radius + bw, btn_border);
+            // Background
+            push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+                pill_x, pill_y, pill_w, pill_h, pill_w, pill_h, radius, btn_bg);
+
+            // Text
+            let label_color = canvas_theme.label.to_array();
+            let mut lx = pill_x + pad_x;
+            let ly = pill_y + pad_y;
+            for c in label.chars() {
+                if c != ' ' {
+                    let glyph = atlas.get_or_rasterize_ui(c, gpu_queue);
+                    if glyph.width > 0.0 && glyph.height > 0.0 {
+                        let gw = glyph.width * z;
+                        let gh = glyph.height * z;
+                        let gx = lx + glyph.bearing_x * z;
+                        let gy = ly + (char_h - glyph.bearing_y * z);
+                        let base = batch.fg_verts.len() as u32;
+                        batch.fg_verts.extend_from_slice(&[
+                            TextVertex { position: [gx, gy], tex_coords: [glyph.tex_x, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
+                            TextVertex { position: [gx + gw, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
+                            TextVertex { position: [gx + gw, gy + gh], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
+                            TextVertex { position: [gx, gy + gh], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
+                        ]);
+                        batch.fg_indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
+                    }
                 }
+                lx += char_w;
             }
-            lx += char_w;
         }
     }
 

@@ -1,3 +1,9 @@
+#[derive(Clone, Debug, PartialEq)]
+pub enum TileKind {
+    Terminal,
+    Http,
+}
+
 /// A floating terminal tile on the canvas.
 pub struct Tile {
     pub id: usize,
@@ -6,12 +12,13 @@ pub struct Tile {
     pub w: f32,
     pub h: f32,
     pub name: String,
+    pub kind: TileKind,
 }
 
 pub const TITLE_BAR_HEIGHT: f32 = 28.0;
 const MIN_TILE_W: f32 = 200.0;
 const MIN_TILE_H: f32 = 120.0;
-const RESIZE_HANDLE: f32 = 18.0;
+const RESIZE_HANDLE: f32 = 32.0;
 const SNAP_GRID: f32 = 24.0; // matches dot grid spacing
 
 fn snap(val: f32, grid: f32) -> f32 {
@@ -52,15 +59,25 @@ impl Canvas {
         let id = self.next_id;
         self.next_id += 1;
         let name = format!("Terminal {}", id + 1);
-        self.tiles.push(Tile { id, x, y, w, h, name });
+        self.tiles.push(Tile { id, x, y, w, h, name, kind: TileKind::Terminal });
         self.focus_order.push(id);
         id
     }
 
-    pub fn spawn_named(&mut self, x: f32, y: f32, w: f32, h: f32, name: String) -> usize {
+    pub fn spawn_named(&mut self, x: f32, y: f32, w: f32, h: f32, name: String, kind: TileKind) -> usize {
         let id = self.next_id;
         self.next_id += 1;
-        self.tiles.push(Tile { id, x, y, w, h, name });
+        self.tiles.push(Tile { id, x, y, w, h, name, kind });
+        self.focus_order.push(id);
+        id
+    }
+
+    pub fn spawn_http(&mut self, x: f32, y: f32, w: f32, h: f32) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        let http_count = self.tiles.iter().filter(|t| t.kind == TileKind::Http).count();
+        let name = format!("HTTP {}", http_count + 1);
+        self.tiles.push(Tile { id, x, y, w, h, name, kind: TileKind::Http });
         self.focus_order.push(id);
         id
     }
