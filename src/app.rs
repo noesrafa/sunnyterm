@@ -763,7 +763,8 @@ impl App {
                 }
             }
         } else {
-            // Click on empty canvas: pan
+            // Click on empty canvas: deselect tiles and start pan
+            self.canvas.defocus();
             self.panning = Some((x, y));
         }
     }
@@ -963,6 +964,27 @@ impl App {
                                         http.cursor_renderer.reset_blink();
                                     }
                                     None => {}
+                                }
+                            } else {
+                                // No tile focused: if clipboard has a curl, create HTTP tile
+                                let trimmed = text.trim();
+                                let is_curl = trimmed.starts_with("curl ")
+                                    || trimmed.starts_with("curl\t")
+                                    || trimmed.starts_with("curl\n")
+                                    || trimmed.starts_with("curl\r");
+                                if is_curl {
+                                    let size = self.window.inner_size();
+                                    let (cx, cy) = self.screen_to_canvas(
+                                        size.width as f32 / 2.0,
+                                        size.height as f32 / 2.0,
+                                    );
+                                    self.spawn_http_tile_at(cx, cy);
+                                    // Now parse the curl into the newly created tile
+                                    if let Some(new_id) = self.canvas.focused_id() {
+                                        if let Some(TileContent::Http(http)) = self.panes.get_mut(&new_id) {
+                                            http.try_parse_curl(&text);
+                                        }
+                                    }
                                 }
                             }
                         }

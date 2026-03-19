@@ -43,6 +43,7 @@ pub struct Canvas {
     pub focus_order: Vec<usize>,
     next_id: usize,
     pub drag: Option<DragState>,
+    no_focus: bool,
 }
 
 impl Canvas {
@@ -52,6 +53,7 @@ impl Canvas {
             focus_order: Vec::new(),
             next_id: 0,
             drag: None,
+            no_focus: false,
         }
     }
 
@@ -61,6 +63,7 @@ impl Canvas {
         let name = format!("Terminal {}", id + 1);
         self.tiles.push(Tile { id, x, y, w, h, name, kind: TileKind::Terminal });
         self.focus_order.push(id);
+        self.no_focus = false;
         id
     }
 
@@ -69,6 +72,7 @@ impl Canvas {
         self.next_id += 1;
         self.tiles.push(Tile { id, x, y, w, h, name, kind });
         self.focus_order.push(id);
+        self.no_focus = false;
         id
     }
 
@@ -79,6 +83,7 @@ impl Canvas {
         let name = format!("HTTP {}", http_count + 1);
         self.tiles.push(Tile { id, x, y, w, h, name, kind: TileKind::Http });
         self.focus_order.push(id);
+        self.no_focus = false;
         id
     }
 
@@ -88,10 +93,16 @@ impl Canvas {
     }
 
     pub fn focused_id(&self) -> Option<usize> {
+        if self.no_focus { return None; }
         self.focus_order.last().copied()
     }
 
+    pub fn defocus(&mut self) {
+        self.no_focus = true;
+    }
+
     pub fn focus(&mut self, id: usize) {
+        self.no_focus = false;
         self.focus_order.retain(|&i| i != id);
         self.focus_order.push(id);
     }
