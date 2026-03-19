@@ -13,6 +13,7 @@ pub fn build_ui_batch(
     surface_width: f32,
     surface_height: f32,
     scale_factor: f32,
+    tile_count: usize,
 ) -> DrawBatch {
     let s = scale_factor;
     let z = 1.0 / zoom; // scale factor for UI elements
@@ -134,5 +135,104 @@ pub fn build_ui_batch(
         lx += char_w;
     }
 
+    // ── Stats pill (bottom-left corner) ──
+    {
+        let stats = CACHED_STATS.with(|c| c.borrow().clone());
+        let label = format!("{} tiles  {}  {}", tile_count, stats.cpu, stats.mem);
+        let char_w = atlas.cell_width * z;
+        let char_h = atlas.cell_height * z;
+        let pad_x = 10.0 * s * z;
+        let pad_y = 6.0 * s * z;
+        let pill_w = pad_x * 2.0 + label.len() as f32 * char_w;
+        let pill_h = pad_y * 2.0 + char_h;
+        let pill_x = pan.0 + margin;
+        let pill_y = sh - margin - pill_h;
+
+        // Border
+        push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+            pill_x - bw, pill_y - bw, pill_w + bw * 2.0, pill_h + bw * 2.0,
+            pill_w + bw * 2.0, pill_h + bw * 2.0, radius + bw, btn_border);
+        // Background
+        push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+            pill_x, pill_y, pill_w, pill_h, pill_w, pill_h, radius, btn_bg);
+
+        // Text
+        let label_color = canvas_theme.label.to_array();
+        let mut lx = pill_x + pad_x;
+        let ly = pill_y + pad_y;
+        for c in label.chars() {
+            if c != ' ' {
+                let glyph = atlas.get_or_rasterize_ui(c, gpu_queue);
+                if glyph.width > 0.0 && glyph.height > 0.0 {
+                    let gw = glyph.width * z;
+                    let gh = glyph.height * z;
+                    let gx = lx + glyph.bearing_x * z;
+                    let gy = ly + (char_h - glyph.bearing_y * z);
+                    let base = batch.fg_verts.len() as u32;
+                    batch.fg_verts.extend_from_slice(&[
+                        TextVertex { position: [gx, gy], tex_coords: [glyph.tex_x, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
+                        TextVertex { position: [gx + gw, gy], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y], color: label_color, bg_color: [0.0; 4] },
+                        TextVertex { position: [gx + gw, gy + gh], tex_coords: [glyph.tex_x + glyph.tex_w, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
+                        TextVertex { position: [gx, gy + gh], tex_coords: [glyph.tex_x, glyph.tex_y + glyph.tex_h], color: label_color, bg_color: [0.0; 4] },
+                    ]);
+                    batch.fg_indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
+                }
+            }
+            lx += char_w;
+        }
+    }
+
     batch
+}
+
+struct CachedStats {
+    cpu: String,
+    mem: String,
+    last_update: std::time::Instant,
+}
+
+impl Clone for CachedStats {
+    fn clone(&self) -> Self {
+        Self { cpu: self.cpu.clone(), mem: self.mem.clone(), last_update: self.last_update }
+    }
+}
+
+thread_local! {
+    static CACHED_STATS: std::cell::RefCell<CachedStats> = std::cell::RefCell::new(CachedStats {
+        cpu: String::from("CPU --"),
+        mem: String::from("MEM --"),
+        last_update: std::time::Instant::now(),
+    });
+}
+
+fn refresh_stats() {
+    CACHED_STATS.with(|c| {
+        let mut stats = c.borrow_mut();
+        if stats.last_update.elapsed().as_secs() < 3 { return; }
+        stats.last_update = std::time::Instant::now();
+
+        let pid = std::process::id();
+
+        // App CPU and RSS via ps
+        if let Ok(o) = std::process::Command::new("ps")
+            .args(["-o", "%cpu=,rss=", "-p", &pid.to_string()])
+            .output()
+        {
+            if let Ok(s) = String::from_utf8(o.stdout) {
+                let parts: Vec<&str> = s.trim().split_whitespace().collect();
+                if parts.len() >= 2 {
+                    stats.cpu = format!("CPU {}%", parts[0].split('.').next().unwrap_or("0"));
+                    if let Ok(rss_kb) = parts[1].parse::<u64>() {
+                        let mb = rss_kb / 1024;
+                        stats.mem = format!("MEM {}MB", mb);
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Call this once per frame to keep stats fresh.
+pub fn update_stats() {
+    refresh_stats();
 }

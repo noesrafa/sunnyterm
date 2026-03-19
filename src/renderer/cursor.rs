@@ -56,7 +56,7 @@ impl CursorRenderer {
         let y = padding + cursor_row as f32 * cell_height;
         let color = theme.cursor.to_array();
 
-        let beam_width = (cell_width * 0.4).max(4.0);
+        let beam_width = (cell_width * 0.55).max(5.0);
         let reduced_height = cell_height * 0.75;
         let (w, h) = match cursor_style {
             "beam" => (beam_width, reduced_height),

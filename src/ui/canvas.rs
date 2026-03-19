@@ -100,7 +100,7 @@ impl Canvas {
         let bar_h = TITLE_BAR_HEIGHT * scale;
         let handle = RESIZE_HANDLE * scale;
         let close_size = 28.0 * scale;
-        let close_margin = 2.0 * scale;
+        let close_margin = 8.0 * scale;
 
         for &id in self.focus_order.iter().rev() {
             if let Some(tile) = self.tile(id) {

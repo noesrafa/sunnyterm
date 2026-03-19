@@ -62,10 +62,31 @@ impl ApplicationHandler for LumeApp {
                     #[allow(deprecated, unexpected_cfgs)]
                     unsafe {
                         use objc::runtime::{Object, YES};
-                        use objc::{msg_send, sel, sel_impl};
+                        use objc::{msg_send, sel, sel_impl, class};
                         let ns_view: *mut Object = appkit.ns_view.as_ptr() as *mut Object;
                         let ns_window: *mut Object = msg_send![ns_view, window];
                         let _: () = msg_send![ns_window, setTitlebarAppearsTransparent: YES];
+
+                        // Disable default Cmd+Q so it goes through our event loop
+                        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+                        let main_menu: *mut Object = msg_send![app, mainMenu];
+                        if !main_menu.is_null() {
+                            let count: i64 = msg_send![main_menu, numberOfItems];
+                            for i in 0..count {
+                                let item: *mut Object = msg_send![main_menu, itemAtIndex: i];
+                                let submenu: *mut Object = msg_send![item, submenu];
+                                if !submenu.is_null() {
+                                    let sub_count: i64 = msg_send![submenu, numberOfItems];
+                                    for j in (0..sub_count).rev() {
+                                        let sub_item: *mut Object = msg_send![submenu, itemAtIndex: j];
+                                        let action: objc::runtime::Sel = msg_send![sub_item, action];
+                                        if action == sel!(terminate:) {
+                                            let _: () = msg_send![submenu, removeItemAtIndex: j];
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -101,8 +122,10 @@ impl ApplicationHandler for LumeApp {
 
         match event {
             WindowEvent::CloseRequested => {
-                app.save_state();
-                event_loop.exit();
+                if confirm_quit() {
+                    app.save_state();
+                    event_loop.exit();
+                }
             }
             WindowEvent::Resized(size) => {
                 app.resize(size.width, size.height);
@@ -112,14 +135,12 @@ impl ApplicationHandler for LumeApp {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = (position.x, position.y);
-                let s = app.scale_factor;
-                app.mouse_move(position.x as f32 * s, position.y as f32 * s);
+                app.mouse_move(position.x as f32, position.y as f32);
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let (x, y) = self.cursor_pos;
-                let s = app.scale_factor;
-                let px = x as f32 * s;
-                let py = y as f32 * s;
+                let px = x as f32;
+                let py = y as f32;
                 match (button, state) {
                     (winit::event::MouseButton::Left, winit::event::ElementState::Pressed) => {
                         // Ctrl+Click: open URL under cursor
@@ -164,27 +185,39 @@ impl ApplicationHandler for LumeApp {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let y_delta = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 20.0,
+                let (x_delta, y_delta) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 20.0, y * 20.0),
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                 };
                 if app.modifiers.super_key() {
-                    let s = app.scale_factor;
+                    // Cmd + scroll = zoom
                     let (mx, my) = self.cursor_pos;
                     let step = if y_delta > 0.0 { 0.1 } else { -0.1 };
-                    app.zoom_at(mx as f32 * s, my as f32 * s, step);
+                    app.zoom_at(mx as f32, my as f32, step);
                 } else {
-                    let lines = y_delta as i32 * 3;
-                    if lines != 0 {
-                        app.scroll(lines);
-                    }
+                    // Two-finger trackpad: pan canvas (works everywhere)
+                    let dx = x_delta / app.canvas_zoom;
+                    let dy = y_delta / app.canvas_zoom;
+                    app.canvas_pan.0 -= dx;
+                    app.canvas_pan.1 -= dy;
+                    app.update_projection();
                 }
+            }
+            WindowEvent::PinchGesture { delta, .. } => {
+                let (mx, my) = self.cursor_pos;
+                let step = delta as f32 * 0.6;
+                app.zoom_at(mx as f32, my as f32, step);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 match app.handle_key_event(&event) {
                     AppAction::SpawnTile => app.spawn_tile(),
                     AppAction::ClosePane => app.close_focused(),
-                    AppAction::Quit => { app.save_state(); event_loop.exit(); }
+                    AppAction::Quit => {
+                        if confirm_quit() {
+                            app.save_state();
+                            event_loop.exit();
+                        }
+                    }
                     AppAction::None => {}
                 }
             }
@@ -229,4 +262,16 @@ fn main() {
 
     let mut lume = LumeApp::new(config);
     event_loop.run_app(&mut lume).expect("Event loop error");
+}
+
+/// Show a native macOS confirmation dialog before quitting.
+fn confirm_quit() -> bool {
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(r#"display dialog "Are you sure you want to quit SunnyTerm?" buttons {"Cancel", "Quit"} default button "Cancel" cancel button "Cancel" with icon caution with title "SunnyTerm""#)
+        .output();
+    match output {
+        Ok(o) => o.status.success(),
+        Err(_) => true, // If osascript fails, allow quit
+    }
 }

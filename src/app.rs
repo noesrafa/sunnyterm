@@ -23,6 +23,37 @@ use crate::ui::theme::Theme;
 
 use wgpu::util::DeviceExt;
 
+/// Text selection anchor and endpoint in grid coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct Selection {
+    pub tile_id: usize,
+    pub start_row: usize,
+    pub start_col: usize,
+    pub end_row: usize,
+    pub end_col: usize,
+}
+
+impl Selection {
+    /// Return (start, end) ordered so start <= end.
+    pub fn ordered(&self) -> ((usize, usize), (usize, usize)) {
+        if (self.start_row, self.start_col) <= (self.end_row, self.end_col) {
+            ((self.start_row, self.start_col), (self.end_row, self.end_col))
+        } else {
+            ((self.end_row, self.end_col), (self.start_row, self.start_col))
+        }
+    }
+
+    /// Check if a cell is within the selection.
+    pub fn contains(&self, row: usize, col: usize) -> bool {
+        let ((sr, sc), (er, ec)) = self.ordered();
+        if row < sr || row > er { return false; }
+        if row == sr && row == er { return col >= sc && col <= ec; }
+        if row == sr { return col >= sc; }
+        if row == er { return col <= ec; }
+        true
+    }
+}
+
 pub struct App {
     pub gpu: GpuContext,
     pub atlas: GlyphAtlas,
@@ -39,6 +70,9 @@ pub struct App {
     pub renaming: bool,
     rename_buffer: String,
     pub is_dark: bool,
+
+    pub selection: Option<Selection>,
+    selecting: bool,
 
     bg_pipeline: wgpu::RenderPipeline,
     fg_pipeline: wgpu::RenderPipeline,
@@ -230,6 +264,8 @@ impl App {
             renaming: false,
             rename_buffer: String::new(),
             is_dark: is_dark_init,
+            selection: None,
+            selecting: false,
             bg_pipeline, fg_pipeline, rounded_pipeline,
             uniform_bind_group, uniform_buffer, texture_bind_group,
             window,
@@ -330,13 +366,7 @@ impl App {
 
     pub fn zoom_at(&mut self, screen_x: f32, screen_y: f32, delta: f32) {
         let old_zoom = self.canvas_zoom;
-        // Snap to 10% increments
-        let target = self.canvas_zoom + delta;
-        let new_zoom = if delta > 0.0 {
-            (target * 10.0).ceil() / 10.0
-        } else {
-            (target * 10.0).floor() / 10.0
-        }.clamp(0.3, 2.0);
+        let new_zoom = (self.canvas_zoom + delta).clamp(0.3, 2.0);
         if (new_zoom - old_zoom).abs() < 0.001 { return; }
 
         // Canvas point under cursor before zoom
@@ -370,7 +400,7 @@ impl App {
         self.zoom_at(cx, cy, -0.1);
     }
 
-    fn update_projection(&mut self) {
+    pub fn update_projection(&mut self) {
         let size = self.window.inner_size();
         let w = size.width as f32 / self.canvas_zoom;
         let h = size.height as f32 / self.canvas_zoom;
@@ -412,11 +442,79 @@ impl App {
         false
     }
 
-    /// Check if cursor (in logical coords) is over a tile.
-    pub fn cursor_over_tile(&self, cursor: (f64, f64)) -> bool {
+    /// Convert canvas coordinates to grid (row, col) for a given tile.
+    pub fn canvas_to_grid(&self, cx: f32, cy: f32, id: usize) -> Option<(usize, usize)> {
         let s = self.scale_factor;
-        let (cx, cy) = self.screen_to_canvas(cursor.0 as f32 * s, cursor.1 as f32 * s);
-        self.canvas.hit_test(cx, cy, s).is_some()
+        let bar_h = TITLE_BAR_HEIGHT * s;
+        let padding = self.config.appearance.padding as f32 * s;
+        let cell_w = self.atlas.cell_width;
+        let cell_h = self.atlas.cell_height;
+
+        let tile = self.canvas.tile(id)?;
+        let pane = self.panes.get(&id)?;
+        let content_y = tile.y + bar_h;
+
+        let is_full_grid = pane.grid.alternate_screen || pane.passthrough;
+        let (rel_x, rel_y) = if is_full_grid {
+            let ry = cy - content_y - padding;
+            let rx = cx - tile.x - padding;
+            if ry < 0.0 || rx < 0.0 { return None; }
+            (rx, ry)
+        } else {
+            let input_padding = 8.0 * s;
+            let input_bar_h = input_padding * 2.0 + cell_h;
+            let input_gap = 6.0 * s;
+            let output_area_h = tile.h - input_bar_h - input_gap;
+            if cy > content_y + output_area_h { return None; }
+            let grid_content_h = padding + pane.grid.rows as f32 * cell_h;
+            let output_scroll = if grid_content_h > output_area_h {
+                grid_content_h - output_area_h
+            } else {
+                0.0
+            };
+            let output_oy = content_y - output_scroll;
+            let ry = cy - output_oy - padding;
+            let rx = cx - tile.x - padding;
+            if ry < 0.0 || rx < 0.0 { return None; }
+            (rx, ry)
+        };
+
+        let row = (rel_y / cell_h) as usize;
+        let col = (rel_x / cell_w) as usize;
+        if row >= pane.grid.rows || col >= pane.grid.cols { return None; }
+        Some((row, col))
+    }
+
+    /// Get the selected text from the terminal grid.
+    pub fn selected_text(&self) -> Option<String> {
+        let sel = self.selection.as_ref()?;
+        let pane = self.panes.get(&sel.tile_id)?;
+        let ((sr, sc), (er, ec)) = sel.ordered();
+        let mut result = String::new();
+        for row in sr..=er {
+            if row >= pane.grid.rows { break; }
+            let line = pane.grid.display_line(row);
+            let col_start = if row == sr { sc } else { 0 };
+            let col_end = if row == er { ec + 1 } else { pane.grid.cols };
+            let col_end = col_end.min(line.len());
+            for col in col_start..col_end {
+                result.push(line[col].c);
+            }
+            if row != er {
+                // Trim trailing spaces from each line
+                let trimmed = result.trim_end_matches(' ');
+                result = trimmed.to_string();
+                result.push('\n');
+            }
+        }
+        let trimmed = result.trim_end().to_string();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
+    }
+
+    /// Check if cursor (in physical coords) is over a tile.
+    pub fn cursor_over_tile(&self, cursor: (f64, f64)) -> bool {
+        let (cx, cy) = self.screen_to_canvas(cursor.0 as f32, cursor.1 as f32);
+        self.canvas.hit_test(cx, cy, self.scale_factor).is_some()
     }
 
     /// Convert screen coords to canvas coords (applying zoom + pan).
@@ -428,8 +526,12 @@ impl App {
         if self.check_zoom_buttons(x, y) {
             return;
         }
+        // Clear selection on any new click
+        self.selection = None;
+        self.selecting = false;
+
         let (cx, cy) = self.screen_to_canvas(x, y);
-        if let Some((id, _in_title, in_resize, in_close)) = self.canvas.hit_test(cx, cy, self.scale_factor) {
+        if let Some((id, in_title, in_resize, in_close)) = self.canvas.hit_test(cx, cy, self.scale_factor) {
             if in_close {
                 self.close_tile(id);
                 return;
@@ -437,8 +539,20 @@ impl App {
             self.canvas.focus(id);
             if in_resize {
                 self.canvas.start_drag(id, DragMode::Resize, cx, cy);
-            } else {
+            } else if in_title {
                 self.canvas.start_drag(id, DragMode::Move, cx, cy);
+            } else {
+                // Click on content area: start text selection
+                if let Some((row, col)) = self.canvas_to_grid(cx, cy, id) {
+                    self.selection = Some(Selection {
+                        tile_id: id,
+                        start_row: row,
+                        start_col: col,
+                        end_row: row,
+                        end_col: col,
+                    });
+                    self.selecting = true;
+                }
             }
         } else {
             // Click on empty canvas: pan
@@ -469,6 +583,16 @@ impl App {
                     }
                 }
             }
+        } else if self.selecting {
+            if let Some(tile_id) = self.selection.as_ref().map(|s| s.tile_id) {
+                let (cx, cy) = self.screen_to_canvas(x, y);
+                if let Some((row, col)) = self.canvas_to_grid(cx, cy, tile_id) {
+                    if let Some(sel) = &mut self.selection {
+                        sel.end_row = row;
+                        sel.end_col = col;
+                    }
+                }
+            }
         }
     }
 
@@ -476,6 +600,13 @@ impl App {
         let had_drag = self.canvas.drag.is_some();
         let had_pan = self.panning.is_some();
         self.panning = None;
+        self.selecting = false;
+        // Clear selection if it's just a click (no drag distance)
+        if let Some(sel) = &self.selection {
+            if sel.start_row == sel.end_row && sel.start_col == sel.end_col {
+                self.selection = None;
+            }
+        }
         if let Some(drag) = &self.canvas.drag {
             if drag.mode == DragMode::Resize {
                 let id = drag.tile_id;
@@ -567,12 +698,12 @@ impl App {
                     "q" => return AppAction::Quit,
                     "=" | "+" | "-" => return AppAction::None,
                     "v" => {
-                        // Cmd+V: paste from clipboard
-                        if let Some(text) = clipboard_read() {
+                        // Cmd+V: paste from clipboard (text or image)
+                        let content = clipboard_read().or_else(clipboard_read_image);
+                        if let Some(text) = content {
                             if let Some(id) = self.canvas.focused_id() {
                                 if let Some(pane) = self.panes.get_mut(&id) {
                                     if pane.grid.alternate_screen || pane.passthrough {
-                                        // Send directly to PTY
                                         let _ = pane.pty.write(text.as_bytes());
                                     } else {
                                         pane.input_insert(&text);
@@ -582,6 +713,15 @@ impl App {
                             }
                         }
                         return AppAction::None;
+                    }
+                    "c" => {
+                        // Cmd+C: copy selection to clipboard, or interrupt if no selection
+                        if let Some(text) = self.selected_text() {
+                            clipboard_write(&text);
+                            self.selection = None;
+                            return AppAction::None;
+                        }
+                        // No selection: fall through to send Ctrl+C / interrupt
                     }
                     _ => {}
                 }
@@ -789,7 +929,7 @@ impl App {
         let bar_h = TITLE_BAR_HEIGHT * s;
         let focused_id = self.canvas.focused_id();
         let draw_order = self.canvas.draw_order();
-        let corner_radius = 20.0 * s;
+        let corner_radius = 26.0 * s;
 
         let canvas_theme = if self.is_dark {
             CanvasTheme::dark()
@@ -814,6 +954,7 @@ impl App {
             let is_focused = Some(tile_id) == focused_id;
             let is_renaming = self.renaming && is_focused;
 
+            let tile_selection = self.selection.as_ref().filter(|sel| sel.tile_id == tile_id);
             let batch = tile_renderer::build_tile_batch(
                 &tile_clone,
                 pane,
@@ -829,6 +970,7 @@ impl App {
                 is_renaming,
                 &self.rename_buffer,
                 &self.config.terminal.cursor_style,
+                tile_selection,
             );
             tile_draws.push(batch);
         }
@@ -845,6 +987,8 @@ impl App {
         );
 
         // Build UI batch
+        ui_renderer::update_stats();
+        let tile_count = self.canvas.tiles.len();
         let ui_batch = ui_renderer::build_ui_batch(
             self.canvas_zoom,
             self.canvas_pan,
@@ -855,6 +999,7 @@ impl App {
             self.gpu.surface_config.width as f32,
             self.gpu.surface_config.height as f32,
             s,
+            tile_count,
         );
 
         // GPU draw
@@ -1094,6 +1239,49 @@ fn clipboard_read() -> Option<String> {
         .output()
         .ok()
         .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
+        .filter(|s| !s.is_empty())
+}
+
+/// Write text to the macOS clipboard via pbcopy.
+fn clipboard_write(text: &str) {
+    use std::io::Write;
+    if let Ok(mut child) = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
+/// Try to read an image from the macOS clipboard and save it to a temp file.
+/// Returns the file path if an image was found.
+fn clipboard_read_image() -> Option<String> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = format!("/tmp/sunnyterm_paste_{timestamp}.png");
+    let script = format!(
+        r#"try
+    set imgData to the clipboard as «class PNGf»
+    set f to open for access POSIX file "{path}" with write permission
+    write imgData to f
+    close access f
+    return "{path}"
+on error
+    return ""
+end try"#
+    );
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .ok()?;
+    let result = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if result.is_empty() { None } else { Some(result) }
 }
 
 /// Find a URL in `text` that spans over column `col`.

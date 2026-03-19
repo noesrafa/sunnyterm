@@ -1,3 +1,4 @@
+use crate::app::Selection;
 use crate::pane::Pane;
 use crate::renderer::atlas::GlyphAtlas;
 use crate::renderer::draw_helpers::{push_quad, push_rounded_quad, DrawBatch};
@@ -21,6 +22,7 @@ pub fn build_tile_batch(
     is_renaming: bool,
     rename_buffer: &str,
     cursor_style: &str,
+    selection: Option<&Selection>,
 ) -> DrawBatch {
     let mut batch = DrawBatch::new();
 
@@ -80,6 +82,39 @@ pub fn build_tile_batch(
         tx + tw - 3.0 * s, ty + total_h - handle_size - 2.0 * s,
         bw, handle_size, border_color);
 
+    // Active indicator dot (blue with lighter border, left of title)
+    if is_focused {
+        let dot_radius = 3.5 * s;
+        let border_w = 1.2 * s;
+        let dot_cx = tx + 14.0 * s;
+        let title_y = ty + (bar_h - cell_h) / 2.0;
+        let dot_cy = title_y + cell_h * 0.65;
+        let dot_color = [0.25, 0.52, 1.0, 1.0];
+        let border_color_dot = [0.45, 0.7, 1.0, 1.0];
+        let steps = 10i32;
+        // Border circle (slightly larger)
+        let outer_r = dot_radius + border_w;
+        for iy in -steps..=steps {
+            let fy = iy as f32 / steps as f32;
+            let half_w = (1.0 - fy * fy).sqrt() * outer_r;
+            let py = dot_cy + fy * outer_r;
+            let row_h = outer_r / steps as f32;
+            push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+                dot_cx - half_w, py - row_h / 2.0,
+                half_w * 2.0, row_h, border_color_dot);
+        }
+        // Inner fill
+        for iy in -steps..=steps {
+            let fy = iy as f32 / steps as f32;
+            let half_w = (1.0 - fy * fy).sqrt() * dot_radius;
+            let py = dot_cy + fy * dot_radius;
+            let row_h = dot_radius / steps as f32;
+            push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+                dot_cx - half_w, py - row_h / 2.0,
+                half_w * 2.0, row_h, dot_color);
+        }
+    }
+
     // Title text
     render_title_text(&mut batch, tile, atlas, theme, canvas_theme, gpu_queue,
         is_renaming, rename_buffer, is_focused, ty, bar_h, tx, tw, s);
@@ -87,11 +122,11 @@ pub fn build_tile_batch(
     // ── Close button (X) in top-right of title bar ──
     {
         let close_size = 28.0 * s;
-        let close_margin = 2.0 * s;
+        let close_margin = 8.0 * s;
         let x_size = 8.0 * s;
         let x_thick = 1.5 * s;
         let close_cx = tx + tw - close_size / 2.0 - close_margin;
-        let close_cy = ty + bar_h / 2.0;
+        let close_cy = ty + (bar_h - cell_h) / 2.0 + cell_h * 0.75;
         let x_color = canvas_theme.title_unfocused.to_array();
 
         // Draw X as two quads rotated 45deg (approximated with small rects)
@@ -123,6 +158,15 @@ pub fn build_tile_batch(
         &pane.grid, atlas, theme, padding, gpu_queue,
     );
 
+    // Build selection highlight
+    let tile_sel = selection.filter(|s| s.tile_id == tile.id);
+    let sel_color = if theme.background.to_array()[0] > 0.5 {
+        [0.0, 0.4, 0.8, 0.3] // blue highlight for light theme
+    } else {
+        [0.3, 0.5, 0.9, 0.4] // brighter blue for dark theme
+    };
+    pane.text_renderer.build_selection(tile_sel, &pane.grid, atlas, padding, sel_color);
+
     let ox = tx;
     let is_alternate = pane.grid.alternate_screen;
     let full_grid = is_alternate || pane.passthrough;
@@ -136,6 +180,15 @@ pub fn build_tile_batch(
             });
         }
         for idx in &pane.text_renderer.bg_indices { batch.bg_indices.push(idx + bg_base); }
+
+        // Selection highlight (between bg and fg)
+        let sel_base = batch.bg_verts.len() as u32;
+        for v in &pane.text_renderer.sel_vertices {
+            batch.bg_verts.push(TextVertex {
+                position: [v.position[0] + ox, v.position[1] + content_y], ..*v
+            });
+        }
+        for idx in &pane.text_renderer.sel_indices { batch.bg_indices.push(idx + sel_base); }
 
         let fg_base = batch.fg_verts.len() as u32;
         for v in &pane.text_renderer.fg_vertices {
@@ -177,6 +230,19 @@ pub fn build_tile_batch(
     let clip_bottom = content_y + output_area_h;
 
     for quad in pane.text_renderer.bg_vertices.chunks_exact(4) {
+        let qy = quad[0].position[1] + output_oy;
+        if qy + cell_h <= clip_top || qy >= clip_bottom { continue; }
+        let base = batch.bg_verts.len() as u32;
+        for v in quad {
+            batch.bg_verts.push(TextVertex {
+                position: [v.position[0] + ox, v.position[1] + output_oy], ..*v
+            });
+        }
+        batch.bg_indices.extend_from_slice(&[base, base+1, base+2, base, base+2, base+3]);
+    }
+
+    // Selection highlight (between bg and fg, clipped to output area)
+    for quad in pane.text_renderer.sel_vertices.chunks_exact(4) {
         let qy = quad[0].position[1] + output_oy;
         if qy + cell_h <= clip_top || qy >= clip_bottom { continue; }
         let base = batch.bg_verts.len() as u32;
@@ -266,7 +332,7 @@ pub fn build_tile_batch(
             let cursor_line_y = input_bar_y + vis_row as f32 * cell_h;
             let cursor_color = theme.cursor.to_array();
 
-            let beam_width = (cell_w * 0.4).max(4.0);
+            let beam_width = (cell_w * 0.55).max(5.0);
             let reduced_h = cell_h * 0.75;
             let (cw, ch) = match cursor_style {
                 "beam" => (beam_width, reduced_h),
@@ -328,7 +394,7 @@ fn render_title_text(
         canvas_theme.title_unfocused.to_array()
     };
     let title_y = ty + (bar_h - cell_h) / 2.0;
-    let mut title_x = tx + 10.0 * s;
+    let mut title_x = tx + if is_focused { 26.0 } else { 10.0 } * s;
     for c in display_name.chars() {
         if title_x + cell_w > tx + tw - 10.0 * s {
             break;

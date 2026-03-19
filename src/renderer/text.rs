@@ -1,3 +1,4 @@
+use crate::app::Selection;
 use crate::renderer::atlas::GlyphAtlas;
 use crate::terminal::grid::Grid;
 use crate::ui::theme::Theme;
@@ -48,6 +49,8 @@ pub struct TextRenderer {
     pub bg_indices: Vec<u32>,
     pub fg_vertices: Vec<TextVertex>,
     pub fg_indices: Vec<u32>,
+    pub sel_vertices: Vec<TextVertex>,
+    pub sel_indices: Vec<u32>,
 }
 
 impl TextRenderer {
@@ -57,6 +60,49 @@ impl TextRenderer {
             bg_indices: Vec::new(),
             fg_vertices: Vec::new(),
             fg_indices: Vec::new(),
+            sel_vertices: Vec::new(),
+            sel_indices: Vec::new(),
+        }
+    }
+
+    /// Build selection highlight quads for the given selection.
+    pub fn build_selection(
+        &mut self,
+        selection: Option<&Selection>,
+        grid: &Grid,
+        atlas: &GlyphAtlas,
+        padding: f32,
+        sel_color: [f32; 4],
+    ) {
+        self.sel_vertices.clear();
+        self.sel_indices.clear();
+        let sel = match selection {
+            Some(s) => s,
+            None => return,
+        };
+        let cell_w = atlas.cell_width;
+        let cell_h = atlas.cell_height;
+        let ((sr, sc), (er, ec)) = sel.ordered();
+
+        for row in sr..=er {
+            if row >= grid.rows { break; }
+            let col_start = if row == sr { sc } else { 0 };
+            let col_end = if row == er { ec + 1 } else { grid.cols };
+            let col_end = col_end.min(grid.cols);
+            if col_start >= col_end { continue; }
+
+            let x = padding + col_start as f32 * cell_w;
+            let y = padding + row as f32 * cell_h;
+            let w = (col_end - col_start) as f32 * cell_w;
+
+            let idx = self.sel_vertices.len() as u32;
+            self.sel_vertices.extend_from_slice(&[
+                TextVertex { position: [x, y], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: sel_color },
+                TextVertex { position: [x + w, y], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: sel_color },
+                TextVertex { position: [x + w, y + cell_h], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: sel_color },
+                TextVertex { position: [x, y + cell_h], tex_coords: [0.0; 2], color: [0.0; 4], bg_color: sel_color },
+            ]);
+            self.sel_indices.extend_from_slice(&[idx, idx + 1, idx + 2, idx, idx + 2, idx + 3]);
         }
     }
 
