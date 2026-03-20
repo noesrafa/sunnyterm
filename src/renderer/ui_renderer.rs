@@ -136,23 +136,66 @@ pub fn build_ui_batch(
         lx += char_w;
     }
 
-    // ── HTTP button (bottom-left, next to info icon) ──
+    // ── Bottom-left buttons: info | terminal | HTTP | SQL ──
+    let icon_size = btn_w;
+    let bl_y = sh - margin - icon_size;
+    let mut bl_x = pan.0 + margin; // will be used by info, then incremented
+
+    // Helper macro: draw a button background at (bx, by)
+    macro_rules! draw_btn_bg {
+        ($bx:expr, $by:expr) => {
+            push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+                $bx - bw, $by - bw, icon_size + bw * 2.0, icon_size + bw * 2.0,
+                icon_size + bw * 2.0, icon_size + bw * 2.0, radius + bw, btn_border);
+            push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
+                $bx, $by, icon_size, icon_size, icon_size, icon_size, radius, btn_bg);
+        };
+    }
+
+    // Skip info button position (drawn later so tooltip renders on top)
+    let info_x = bl_x;
+    bl_x += icon_size + gap * 2.0;
+
+    // ── Terminal button ── (">_" icon)
     {
-        let icon_size = btn_w;
-        let http_x = pan.0 + margin + icon_size + gap * 2.0;
-        let http_y = sh - margin - icon_size;
+        let term_x = bl_x;
+        draw_btn_bg!(term_x, bl_y);
+        let tcx = term_x + icon_size / 2.0;
+        let tcy = bl_y + icon_size / 2.0;
+        let term_color = [0.4, 0.8, 0.5, 1.0]; // green
+        // ">" chevron
+        let chev_h = 8.0 * s * z;
+        let chev_w = 5.0 * s * z;
+        let chev_x = tcx - 4.0 * s * z;
+        let chev_cy = tcy - 1.0 * s * z;
+        // top arm of >
+        for i in 0..4 {
+            let t = i as f32 / 3.0;
+            push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+                chev_x + t * chev_w, chev_cy - chev_h / 2.0 + t * chev_h / 2.0 - line_w * 0.5,
+                line_w * 1.2, line_w * 1.2, term_color);
+        }
+        // bottom arm of >
+        for i in 0..4 {
+            let t = i as f32 / 3.0;
+            push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+                chev_x + t * chev_w, chev_cy + chev_h / 2.0 - t * chev_h / 2.0 - line_w * 0.5,
+                line_w * 1.2, line_w * 1.2, term_color);
+        }
+        // "_" underscore
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            tcx - 1.0 * s * z, tcy + 4.0 * s * z, 7.0 * s * z, line_w, term_color);
 
-        // Border + background
-        push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
-            http_x - bw, http_y - bw, icon_size + bw * 2.0, icon_size + bw * 2.0,
-            icon_size + bw * 2.0, icon_size + bw * 2.0, radius + bw, btn_border);
-        push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
-            http_x, http_y, icon_size, icon_size, icon_size, icon_size, radius, btn_bg);
+        bl_x += icon_size + gap * 2.0;
+    }
 
-        // HTTP icon: draw "{}" braces
+    // ── HTTP button ── ("{}" icon)
+    {
+        let http_x = bl_x;
+        draw_btn_bg!(http_x, bl_y);
         let hcx = http_x + icon_size / 2.0;
-        let hcy = http_y + icon_size / 2.0;
-        let http_icon_color = [0.9, 0.5, 0.2, 1.0]; // orange to match HTTP tile dot
+        let hcy = bl_y + icon_size / 2.0;
+        let http_icon_color = [0.9, 0.5, 0.2, 1.0]; // orange
         let brace_h = 10.0 * s * z;
         let brace_w = 2.0 * s * z;
         let brace_offset = 5.0 * s * z;
@@ -171,13 +214,54 @@ pub fn build_ui_batch(
             hcx + brace_offset - hook_w, hcy - brace_h / 2.0, hook_w, line_w, http_icon_color);
         push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
             hcx + brace_offset - hook_w, hcy + brace_h / 2.0 - line_w, hook_w, line_w, http_icon_color);
+
+        bl_x += icon_size + gap * 2.0;
     }
 
-    // ── Stats info icon (bottom-left corner) ──
+    // ── SQL button ── (cylinder/database icon)
     {
-        let icon_size = btn_w; // same size as other buttons
-        let icon_x = pan.0 + margin;
-        let icon_y = sh - margin - icon_size;
+        let sql_x = bl_x;
+        draw_btn_bg!(sql_x, bl_y);
+        let scx = sql_x + icon_size / 2.0;
+        let scy = bl_y + icon_size / 2.0;
+        let sql_color = [0.4, 0.7, 0.95, 1.0]; // blue
+        let db_w = 12.0 * s * z;
+        let db_h = 12.0 * s * z;
+        let ellipse_h = 3.0 * s * z;
+        // Cylinder body (vertical lines)
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            scx - db_w / 2.0, scy - db_h / 2.0 + ellipse_h / 2.0,
+            line_w, db_h - ellipse_h, sql_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            scx + db_w / 2.0 - line_w, scy - db_h / 2.0 + ellipse_h / 2.0,
+            line_w, db_h - ellipse_h, sql_color);
+        // Top ellipse (3 horizontal lines to approximate)
+        let top_y = scy - db_h / 2.0;
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            scx - db_w / 2.0, top_y + ellipse_h / 2.0 - line_w * 0.5,
+            db_w, line_w, sql_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            scx - db_w * 0.35, top_y - line_w * 0.5,
+            db_w * 0.7, line_w, sql_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            scx - db_w * 0.35, top_y + ellipse_h - line_w * 0.5,
+            db_w * 0.7, line_w, sql_color);
+        // Bottom ellipse
+        let bot_y = scy + db_h / 2.0 - ellipse_h;
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            scx - db_w / 2.0, bot_y + ellipse_h / 2.0 - line_w * 0.5,
+            db_w, line_w, sql_color);
+        push_quad(&mut batch.bg_verts, &mut batch.bg_indices,
+            scx - db_w * 0.35, bot_y + ellipse_h - line_w * 0.5,
+            db_w * 0.7, line_w, sql_color);
+
+        let _ = bl_x;
+    }
+
+    // ── Stats info icon (bottom-left corner, first button) ──
+    {
+        let icon_x = info_x;
+        let icon_y = bl_y;
 
         // Icon button: border + background
         push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,
@@ -210,8 +294,8 @@ pub fn build_ui_batch(
             let pad_y = 6.0 * s * z;
             let pill_w = pad_x * 2.0 + label.len() as f32 * char_w;
             let pill_h = pad_y * 2.0 + char_h;
-            let pill_x = icon_x + icon_size + 8.0 * s * z;
-            let pill_y = icon_y + (icon_size - pill_h) / 2.0;
+            let pill_x = icon_x;
+            let pill_y = icon_y - pill_h - 8.0 * s * z;
 
             // Border
             push_rounded_quad(&mut batch.rounded_verts, &mut batch.rounded_indices,

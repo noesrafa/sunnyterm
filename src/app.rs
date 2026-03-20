@@ -85,6 +85,7 @@ pub struct App {
     selecting: bool,
     stats_hovered: bool,
     pub space_held: bool,
+    pub cursor_canvas_pos: (f32, f32),
 
     bg_pipeline: wgpu::RenderPipeline,
     fg_pipeline: wgpu::RenderPipeline,
@@ -190,8 +191,8 @@ impl App {
             // First launch: create default tile (snapped to grid)
             let grid = 24.0 * scale_factor;
             let snap = |v: f32| (v / grid).round() * grid;
-            let tw = snap(800.0 * scale_factor);
-            let th = snap(800.0 * scale_factor);
+            let tw = snap(680.0 * scale_factor);
+            let th = snap(680.0 * scale_factor);
             let tx = snap((size.width as f32 - tw) / 2.0);
             let ty = snap((size.height as f32 - th - bar_h) / 2.0);
             let tile_id = canvas.spawn(tx, ty, tw, th);
@@ -309,6 +310,7 @@ impl App {
             selecting: false,
             stats_hovered: false,
             space_held: false,
+            cursor_canvas_pos: (0.0, 0.0),
             bg_pipeline, fg_pipeline, rounded_pipeline,
             uniform_bind_group, uniform_buffer, texture_bind_group,
             window,
@@ -324,19 +326,31 @@ impl App {
     }
 
     fn default_tile_size(&self) -> (f32, f32) {
-        let tw = self.snap_to_grid(800.0 * self.scale_factor);
-        let th = self.snap_to_grid(800.0 * self.scale_factor);
+        let tw = self.snap_to_grid(680.0 * self.scale_factor);
+        let th = self.snap_to_grid(680.0 * self.scale_factor);
         (tw, th)
+    }
+
+    /// Random offset in grid units for spawn jitter.
+    fn spawn_jitter(&self) -> (f32, f32) {
+        let grid = 24.0 * self.scale_factor;
+        let seed = (self.canvas.tiles.len() as u64)
+            .wrapping_mul(2654435761) // knuth hash
+            .wrapping_add(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64).unwrap_or(0));
+        let jx = ((seed % 7) as f32 - 3.0) * grid; // -3..+3 grid cells
+        let jy = (((seed / 7) % 7) as f32 - 3.0) * grid;
+        (jx, jy)
     }
 
     pub fn spawn_tile(&mut self) {
         let size = self.window.inner_size();
         let s = self.scale_factor;
         let (tw, th) = self.default_tile_size();
-        let grid = 24.0 * s;
-        let offset = (self.canvas.tiles.len() as f32 * grid) % (8.0 * grid);
-        let x = self.snap_to_grid(((size.width as f32 - tw) / 2.0 + offset).max(0.0));
-        let y = self.snap_to_grid(((size.height as f32 - th) / 2.0 + offset).max(0.0));
+        let (jx, jy) = self.spawn_jitter();
+        let x = self.snap_to_grid(((size.width as f32 - tw) / 2.0 + jx).max(0.0));
+        let y = self.snap_to_grid(((size.height as f32 - th) / 2.0 + jy).max(0.0));
 
         let tile_id = self.canvas.spawn(x, y, tw, th);
         let padding = self.config.appearance.padding as f32 * s;
@@ -369,8 +383,9 @@ impl App {
 
     pub fn spawn_http_tile(&mut self) {
         let size = self.window.inner_size();
-        let view_cx = size.width as f32 / 2.0;
-        let view_cy = size.height as f32 / 2.0;
+        let (jx, jy) = self.spawn_jitter();
+        let view_cx = size.width as f32 / 2.0 + jx;
+        let view_cy = size.height as f32 / 2.0 + jy;
         let (cx, cy) = self.screen_to_canvas(view_cx, view_cy);
         self.spawn_http_tile_at(cx, cy);
     }
@@ -388,8 +403,9 @@ impl App {
 
     pub fn spawn_postgres_tile(&mut self) {
         let size = self.window.inner_size();
-        let view_cx = size.width as f32 / 2.0;
-        let view_cy = size.height as f32 / 2.0;
+        let (jx, jy) = self.spawn_jitter();
+        let view_cx = size.width as f32 / 2.0 + jx;
+        let view_cy = size.height as f32 / 2.0 + jy;
         let (cx, cy) = self.screen_to_canvas(view_cx, view_cy);
         self.spawn_postgres_tile_at(cx, cy);
     }
@@ -521,11 +537,27 @@ impl App {
             return true;
         }
 
-        // HTTP button (bottom-left, next to info icon)
-        let http_btn_x = margin + btn_w + gap * 2.0;
-        let http_btn_y = size.height as f32 - margin - btn_h;
-        if x >= http_btn_x && x < http_btn_x + btn_w && y >= http_btn_y && y < http_btn_y + btn_h {
+        // Bottom-left buttons: info | terminal | HTTP | SQL
+        let bl_y = size.height as f32 - margin - btn_h;
+        let mut bl_x = margin + btn_w + gap * 2.0; // skip info button
+
+        // Terminal button
+        if x >= bl_x && x < bl_x + btn_w && y >= bl_y && y < bl_y + btn_h {
+            self.spawn_tile();
+            return true;
+        }
+        bl_x += btn_w + gap * 2.0;
+
+        // HTTP button
+        if x >= bl_x && x < bl_x + btn_w && y >= bl_y && y < bl_y + btn_h {
             self.spawn_http_tile();
+            return true;
+        }
+        bl_x += btn_w + gap * 2.0;
+
+        // SQL button
+        if x >= bl_x && x < bl_x + btn_w && y >= bl_y && y < bl_y + btn_h {
+            self.spawn_postgres_tile();
             return true;
         }
 
@@ -923,8 +955,11 @@ impl App {
         self.stats_hovered = x >= icon_x && x < icon_x + btn_size
             && y >= icon_y && y < icon_y + btn_size;
 
+        // Track cursor in canvas space for dot grid glow
+        self.cursor_canvas_pos = self.screen_to_canvas(x, y);
+
         // Handle postgres scrollbar drag
-        let canvas_pos = self.screen_to_canvas(x, y);
+        let canvas_pos = self.cursor_canvas_pos;
         if let Some(id) = self.canvas.focused_id() {
             // Gather tile info before mutable borrow
             let tile_info = self.canvas.tile(id).map(|t| (t.x, t.y, t.w, t.h));
@@ -2050,6 +2085,7 @@ impl App {
             view_h,
             s,
             &canvas_theme,
+            self.cursor_canvas_pos,
         );
 
         // Build toast overlays (rendered last, on top of everything)
