@@ -48,17 +48,19 @@ export function BrowserTile({ tileId }: Props) {
     const entry = browserRegistry.get(tileId)
     if (entry) {
       entry.currentUrl = normalized
+      webviewRef.current?.loadURL(normalized)
     } else {
-      // Create webview on first navigation
+      // Create webview on first navigation — use src attribute, not loadURL,
+      // because the webview isn't ready yet right after createElement
       if (!containerRef.current) return
       const wv = document.createElement('webview') as unknown as Electron.WebviewTag
+      wv.setAttribute('src', normalized)
       wv.setAttribute('allowpopups', 'true')
       wv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%'
       containerRef.current.appendChild(wv as unknown as Node)
       webviewRef.current = wv
       browserRegistry.set(tileId, { webview: wv as unknown as HTMLElement, currentUrl: normalized })
     }
-    webviewRef.current?.loadURL(normalized)
   }, [normalizeUrl, tileId])
 
   const handleSubmit = useCallback((e: React.FormEvent) => {
@@ -152,7 +154,6 @@ export function BrowserTile({ tileId }: Props) {
       <form
         onSubmit={handleSubmit}
         className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0"
-        onMouseDown={(e) => e.stopPropagation()}
       >
         <button type="button" className={navBtn} onClick={goBack} disabled={!canGoBack} title="Back">
           <ArrowLeft size={13} />
