@@ -26,6 +26,7 @@ export interface Tile {
   userRenamed: boolean
   outputLink: string | null  // tile id this tile pipes output to
   zIndex: number
+  initialUrl?: string  // for browser tiles: URL to load on first mount
 }
 
 // Tile snapshot for undo/redo

@@ -208,10 +208,7 @@ export function useKeyboard() {
 
   useEffect(() => {
     const cleanup = window.electronAPI.onOpenUrl((url) => {
-      const tile = useStore.getState().spawnTile('browser')
-      useStore.setState((s) => ({
-        pendingBrowserUrl: { ...s.pendingBrowserUrl, [tile.id]: url }
-      }))
+      useStore.getState().spawnTile('browser', undefined, undefined, url)
     })
     return cleanup
   }, [])

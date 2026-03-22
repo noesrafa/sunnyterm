@@ -39,25 +39,16 @@ export function BrowserTile({ tileId }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
 
+  const tiles = useStore((s) => s.tiles)
+  const tile = tiles.find((t) => t.id === tileId)
   const existing = browserRegistry.get(tileId)
-  // Consume pending URL immediately (from link click in terminal/webview)
-  const pendingUrl = useRef<string | null>(null)
-  if (!existing) {
-    const pending = useStore.getState().pendingBrowserUrl[tileId]
-    if (pending) {
-      pendingUrl.current = pending
-      useStore.setState((s) => {
-        const next = { ...s.pendingBrowserUrl }
-        delete next[tileId]
-        return { pendingBrowserUrl: next }
-      })
-    }
-  }
-  const [inputValue, setInputValue] = useState(existing?.currentUrl ?? pendingUrl.current ?? '')
+  const initUrl = tile?.initialUrl ?? null
+
+  const [inputValue, setInputValue] = useState(existing?.currentUrl ?? initUrl ?? '')
   const [isLoading, setIsLoading] = useState(false)
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
-  const [hasNavigated, setHasNavigated] = useState(!!existing || !!pendingUrl.current)
+  const [hasNavigated, setHasNavigated] = useState(!!existing || !!initUrl)
 
   // Normalize URL — add protocol if missing
   const normalizeUrl = useCallback((raw: string): string => {
@@ -125,11 +116,9 @@ export function BrowserTile({ tileId }: Props) {
       }
     }
 
-    // Auto-navigate if spawned with a pending URL
-    if (pendingUrl.current) {
-      const url = pendingUrl.current
-      pendingUrl.current = null
-      const normalized = normalizeUrl(url)
+    // Auto-navigate if spawned with an initial URL
+    if (initUrl) {
+      const normalized = normalizeUrl(initUrl)
       const wv = document.createElement('webview') as unknown as Electron.WebviewTag
       wv.setAttribute('src', normalized)
       wv.setAttribute('allowpopups', 'true')

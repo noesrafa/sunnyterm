@@ -110,8 +110,7 @@ export interface CanvasStore {
   tileCwds: Record<string, string>
   /** Pending curl data to populate a newly spawned HTTP tile */
   pendingCurlData: Record<string, { method: string; url: string; headers: { key: string; value: string }[]; body: string }>
-  /** Pending URL for a newly spawned browser tile */
-  pendingBrowserUrl: Record<string, string>
+
 
   // ── Actions ────────────────────────────────────────────────────────────────
   setZoom: (zoom: number) => void
@@ -123,7 +122,7 @@ export interface CanvasStore {
   resetView: () => void
   fitAllTiles: () => void
 
-  spawnTile: (kind: TileKind, x?: number, y?: number) => Tile
+  spawnTile: (kind: TileKind, x?: number, y?: number, initialUrl?: string) => Tile
   removeTile: (id: string) => void
   focusTile: (id: string | null) => void
   renameTile: (id: string, name: string) => void
@@ -212,7 +211,6 @@ export const useStore = create<CanvasStore>()(
     activeWorkspace: null,
     tileCwds: {},
     pendingCurlData: {},
-    pendingBrowserUrl: {},
 
     // ── Viewport ─────────────────────────────────────────────────────────────
 
@@ -278,7 +276,7 @@ export const useStore = create<CanvasStore>()(
 
     // ── Tiles ─────────────────────────────────────────────────────────────────
 
-    spawnTile: (kind, x, y) => {
+    spawnTile: (kind, x, y, initialUrl) => {
       const { tiles, panX, panY, zoom, viewMode } = get()
       const tileW = snapToGrid(640)
       const tileH = snapToGrid(396)
@@ -314,7 +312,8 @@ export const useStore = create<CanvasStore>()(
         kind,
         userRenamed: false,
         outputLink: null,
-        zIndex: nextZIndex(tiles)
+        zIndex: nextZIndex(tiles),
+        ...(initialUrl ? { initialUrl } : {})
       }
       pushUndo(get, set, { type: 'create', snapshot: { ...tile } })
       set((s) => ({ tiles: [...s.tiles, tile], focusedId: tile.id }))
