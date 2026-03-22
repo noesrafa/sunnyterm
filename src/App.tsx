@@ -149,21 +149,6 @@ function Toolbar() {
       <div style={{ width: 72 }} />
 
       <div className="flex items-center gap-0.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        <button className={btnLabel} onClick={() => spawnTile('terminal')} title="New Terminal (⌘T)">
-          <Terminal size={ico} /> <span className="text-[11px]">Terminal</span>
-        </button>
-        <button className={btnLabel} onClick={() => spawnTile('http')} title="New HTTP Client (⌘⇧H)">
-          <Globe size={ico} /> <span className="text-[11px]">HTTP</span>
-        </button>
-        <button className={btnLabel} onClick={() => spawnTile('postgres')} title="New PostgreSQL Client (⌘⇧P)">
-          <Database size={ico} /> <span className="text-[11px]">DB</span>
-        </button>
-        <button className={btnLabel} onClick={() => spawnTile('browser')} title="New Browser (⌘⇧B)">
-          <Compass size={ico} /> <span className="text-[11px]">Browser</span>
-        </button>
-
-        <div className={sep} />
-
         <button
           className={btn}
           onClick={() => setExpanded((v) => !v)}
@@ -174,6 +159,21 @@ function Toolbar() {
 
         {expanded && (
           <>
+            <button className={btnLabel} onClick={() => spawnTile('terminal')} title="New Terminal (⌘T)">
+              <Terminal size={ico} /> <span className="text-[11px]">Terminal</span>
+            </button>
+            <button className={btnLabel} onClick={() => spawnTile('http')} title="New HTTP Client (⌘⇧H)">
+              <Globe size={ico} /> <span className="text-[11px]">HTTP</span>
+            </button>
+            <button className={btnLabel} onClick={() => spawnTile('postgres')} title="New PostgreSQL Client (⌘⇧P)">
+              <Database size={ico} /> <span className="text-[11px]">DB</span>
+            </button>
+            <button className={btnLabel} onClick={() => spawnTile('browser')} title="New Browser (⌘⇧B)">
+              <Compass size={ico} /> <span className="text-[11px]">Browser</span>
+            </button>
+
+            <div className={sep} />
+
             <button className={btn} onClick={undo} disabled={undoStack.length === 0} title="Undo (⌘Z)">
               <Undo2 size={ico} />
             </button>
