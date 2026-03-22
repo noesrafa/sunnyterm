@@ -211,10 +211,51 @@ export function BrowserTile({ tileId }: Props) {
       </form>
 
       {/* Content */}
-      <div ref={containerRef} className="flex-1 min-h-0 relative overflow-hidden" style={{ isolation: 'isolate' }}>
-        {!hasNavigated && <EmptyState onNavigate={navigate} />}
+      <div className="flex-1 min-h-0 relative">
+        <div ref={containerRef} className="absolute inset-0 overflow-hidden" style={{ isolation: 'isolate' }}>
+          {!hasNavigated && <EmptyState onNavigate={navigate} />}
+        </div>
+        {/* Overlay to intercept right/middle click for canvas pan — webview
+            is a separate process and swallows all mouse events otherwise */}
+        {hasNavigated && <WebviewMouseGuard />}
       </div>
     </div>
+  )
+}
+
+// ── Webview mouse guard ──────────────────────────────────────────────────────
+// Transparent overlay that only activates on right/middle click to allow
+// canvas panning over browser tiles. Left clicks pass through to the webview.
+
+function WebviewMouseGuard() {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+
+    // Intercept pointer events at the capture phase.
+    // Right/middle click: keep the event flowing to canvas for pan.
+    // Left click: re-dispatch to the element below (webview) by hiding briefly.
+    const onDown = (e: PointerEvent) => {
+      if (e.button === 0) {
+        // Left click — let it through to the webview
+        el.style.pointerEvents = 'none'
+        requestAnimationFrame(() => { el.style.pointerEvents = 'auto' })
+      }
+      // Right/middle click naturally bubbles to canvas
+    }
+    el.addEventListener('pointerdown', onDown)
+    return () => el.removeEventListener('pointerdown', onDown)
+  }, [])
+
+  return (
+    <div
+      ref={ref}
+      className="absolute inset-0"
+      style={{ zIndex: 20 }}
+      onContextMenu={(e) => e.preventDefault()}
+    />
   )
 }
 
