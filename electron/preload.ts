@@ -91,5 +91,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('pg:disconnect', id),
 
   pgQuery: (id: string, sql: string) =>
-    ipcRenderer.invoke('pg:query', id, sql)
+    ipcRenderer.invoke('pg:query', id, sql),
+
+  // Command history
+  historyLoad: () =>
+    ipcRenderer.invoke('history:load'),
+
+  historySave: (commands: string[]) =>
+    ipcRenderer.invoke('history:save', commands),
+
+  // Completions (path & git)
+  completePath: (tileId: string, partial: string) =>
+    ipcRenderer.invoke('completion:path', tileId, partial),
+
+  completeGit: (tileId: string, type: 'branch' | 'remote' | 'tag', partial: string) =>
+    ipcRenderer.invoke('completion:git', tileId, type, partial)
 })

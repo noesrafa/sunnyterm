@@ -135,6 +135,22 @@ export interface ElectronAPI {
   pgConnect: (id: string, connectionString: string) => Promise<{ ok: boolean; error?: string }>
   pgDisconnect: (id: string) => Promise<void>
   pgQuery: (id: string, sql: string) => Promise<PgQueryResult>
+
+  // Command history
+  historyLoad: () => Promise<string[]>
+  historySave: (commands: string[]) => Promise<void>
+
+  // Completions
+  completePath: (tileId: string, partial: string) => Promise<CompletionItemResult[]>
+  completeGit: (tileId: string, type: 'branch' | 'remote' | 'tag', partial: string) => Promise<CompletionItemResult[]>
+}
+
+// ─── Completion types ────────────────────────────────────────────────────────
+
+export interface CompletionItemResult {
+  value: string
+  label: string
+  kind: 'file' | 'directory' | 'branch' | 'remote' | 'tag'
 }
 
 // ─── HTTP types ───────────────────────────────────────────────────────────────

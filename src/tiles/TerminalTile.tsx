@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -10,6 +10,10 @@ import { TITLE_BAR_H } from './TileContainer'
 import { registerTerminal, unregisterTerminal, getTerminalEntry } from '../lib/terminalRegistry'
 import type { TerminalEntry } from '../lib/terminalRegistry'
 import { stripAnsi } from '../lib/stripAnsi'
+import { InputInterceptor } from '../lib/inputInterceptor'
+import { GhostTextRenderer } from '../lib/ghostTextRenderer'
+import { initHistory, addCommand, findMatch } from '../lib/commandHistory'
+import { CompletionDropdown, type CompletionItem } from './CompletionDropdown'
 
 // ── Terminal themes ────────────────────────────────────────────────────────────
 
@@ -80,6 +84,11 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
   const [exitInfo, setExitInfo] = useState<{ code: number } | null>(null)
   // incrementing this forces terminal + PTY to fully reinitialise
   const [instanceKey, setInstanceKey] = useState(0)
+
+  // Autocomplete state
+  const [completionItems, setCompletionItems] = useState<CompletionItem[]>([])
+  const [completionPos, setCompletionPos] = useState({ x: 0, y: 0 })
+  const interceptorRef = useRef<InputInterceptor | null>(null)
 
   const tiles = useStore((s) => s.tiles)
   const isDark = useStore((s) => s.isDark)
@@ -210,10 +219,84 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
 
     markTileAlive(tileId)
 
+    // ── Ghost text renderer ──────────────────────────────────────────────
+    const ghostRenderer = new GhostTextRenderer(term, () => isDarkRef.current)
+
+    // ── Completion helper ─────────────────────────────────────────────────
+    const requestCompletions = async (buffer: string) => {
+      // Parse the last token from the buffer for path completion
+      const tokens = buffer.trimEnd().split(/\s+/)
+      const lastToken = tokens[tokens.length - 1] || ''
+
+      // Determine completion type
+      const isGitCmd = /^git\s+/.test(buffer)
+      const gitSub = isGitCmd ? tokens[1] : null
+      const needsBranch = gitSub && ['checkout', 'switch', 'merge', 'rebase', 'branch', 'push', 'pull', 'diff', 'log'].includes(gitSub)
+
+      let items: CompletionItem[] = []
+
+      if (needsBranch && tokens.length >= 3) {
+        // Git branch/tag completion
+        const partial = tokens[tokens.length - 1] || ''
+        const [branches, tags] = await Promise.all([
+          window.electronAPI.completeGit(tileId, 'branch', partial),
+          window.electronAPI.completeGit(tileId, 'tag', partial)
+        ])
+        items = [...branches, ...tags] as CompletionItem[]
+      } else if (isGitCmd && gitSub === 'remote' && tokens.length >= 3) {
+        const partial = tokens[tokens.length - 1] || ''
+        items = await window.electronAPI.completeGit(tileId, 'remote', partial) as CompletionItem[]
+      } else {
+        // Path completion for the last token
+        items = await window.electronAPI.completePath(tileId, lastToken) as CompletionItem[]
+      }
+
+      if (items.length === 1) {
+        // Single match: insert directly
+        const completed = items[0].value
+        const suffix = completed.slice(lastToken.split('/').pop()?.length || 0)
+        if (suffix) {
+          interceptor.insertCompletion(suffix)
+        }
+        setCompletionItems([])
+      } else if (items.length > 1) {
+        // Multiple matches: show dropdown
+        // Calculate pixel position from cursor
+        const core = (term as any)._core
+        const dims = core?._renderService?.dimensions?.css?.cell
+        const cursorX = term.buffer.active.cursorX
+        const cursorY = term.buffer.active.cursorY
+        if (dims) {
+          setCompletionPos({
+            x: cursorX * dims.width + 8, // 8px padding
+            y: (cursorY + 1) * dims.height + 6 // below cursor line, 6px padding
+          })
+        }
+        setCompletionItems(items)
+      } else {
+        // No matches: forward tab to shell
+        setCompletionItems([])
+        window.electronAPI.ptyWrite(tileId, '\t')
+      }
+    }
+
+    // ── Input interceptor ─────────────────────────────────────────────────
+    initHistory()
+    const interceptor = new InputInterceptor(term, {
+      ptyWrite: (data) => window.electronAPI.ptyWrite(tileId, data),
+      onCommandExecuted: (cmd) => addCommand(cmd),
+      getSuggestion: (prefix) => findMatch(prefix),
+      renderGhostText: (text) => ghostRenderer.setGhostText(text),
+      requestCompletions,
+      dismissCompletions: () => setCompletionItems([])
+    })
+    interceptorRef.current = interceptor
+
     // Helper to subscribe to PTY data/exit events
     const subscribePty = () => {
       const cleanup = window.electronAPI.onPtyData(tileId, (data) => {
         term.write(data)
+        interceptor.handleOutput(data) // detect raw mode
         const link = entry.outputLink
         if (link) {
           const clean = stripAnsi(data)
@@ -250,10 +333,10 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
       term.write(`\r\n\x1b[31mFailed to spawn PTY: ${err}\x1b[0m\r\n`)
     })
 
-    // Forward user input to PTY — silently ignored when process has exited
+    // Forward user input through interceptor (handles ghost text + completions)
     term.onData((data) => {
       if (entry.isExited) return
-      window.electronAPI.ptyWrite(tileId, data)
+      interceptor.handleInput(data)
     })
 
     term.onResize(({ cols, rows }) => {
@@ -273,6 +356,9 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
 
       if (!tileStillExists) {
         // Tile was removed — fully dispose
+        interceptor.dispose()
+        ghostRenderer.dispose()
+        interceptorRef.current = null
         entry.cleanupPty?.()
         entry.cleanupExit?.()
         window.electronAPI.ptyKill(tileId)
@@ -358,9 +444,39 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
     setInstanceKey((k) => k + 1)
   }
 
+  const handleCompletionSelect = useCallback((item: CompletionItem) => {
+    const interceptor = interceptorRef.current
+    if (!interceptor) return
+    // Extract the last token from the buffer to determine what to insert
+    const buffer = interceptor.getBuffer()
+    const tokens = buffer.trimEnd().split(/\s+/)
+    const lastToken = tokens[tokens.length - 1] || ''
+    // For paths, only insert the part after the last /
+    const lastSlash = lastToken.lastIndexOf('/')
+    const prefix = lastSlash >= 0 ? lastToken.slice(lastSlash + 1) : lastToken
+    const suffix = item.value.slice(prefix.length)
+    if (suffix) interceptor.insertCompletion(suffix)
+    setCompletionItems([])
+  }, [])
+
+  const handleCompletionDismiss = useCallback(() => {
+    setCompletionItems([])
+    // Forward tab to shell as fallback
+  }, [])
+
   return (
     <div className="w-full h-full relative">
       <div ref={containerRef} className="w-full h-full" />
+
+      {completionItems.length > 0 && (
+        <CompletionDropdown
+          items={completionItems}
+          position={completionPos}
+          onSelect={handleCompletionSelect}
+          onDismiss={handleCompletionDismiss}
+          isDark={isDark}
+        />
+      )}
 
       {exitInfo !== null && (
         <div

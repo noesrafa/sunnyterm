@@ -5,10 +5,13 @@ import { PtyManager } from './pty'
 import { WorkspaceManager } from './workspace'
 import type { WorkspaceLayout, PersistedAppState } from './workspace'
 import { Client as PgClient } from 'pg'
+import { HistoryManager } from './history'
+import { completePath, completeGit } from './completions'
 
 let mainWindow: BrowserWindow | null = null
 const ptyManager = new PtyManager()
 const workspaceManager = new WorkspaceManager()
+const historyManager = new HistoryManager()
 
 function sendMenuAction(action: string): void {
   mainWindow?.webContents.send('menu:action', action)
@@ -330,6 +333,28 @@ ipcMain.handle('pg:query', async (_event, id: string, sql: string) => {
     const elapsed = Date.now() - startMs
     return { ok: false, error: (err as Error).message, elapsed }
   }
+})
+
+// ─── Command history IPC handlers ────────────────────────────────────────────
+
+ipcMain.handle('history:load', () => {
+  return historyManager.load()
+})
+
+ipcMain.handle('history:save', (_event, commands: string[]) => {
+  historyManager.save(commands)
+})
+
+// ─── Completion IPC handlers ─────────────────────────────────────────────────
+
+ipcMain.handle('completion:path', async (_event, tileId: string, partial: string) => {
+  const cwd = ptyManager.getCwd(tileId) || process.env.HOME || '/'
+  return completePath(cwd, partial)
+})
+
+ipcMain.handle('completion:git', async (_event, tileId: string, type: 'branch' | 'remote' | 'tag', partial: string) => {
+  const cwd = ptyManager.getCwd(tileId) || process.env.HOME || '/'
+  return completeGit(cwd, type, partial)
 })
 
 // ─── App lifecycle ─────────────────────────────────────────────────────────────
