@@ -152,7 +152,7 @@ function Toolbar() {
         <button className={btnLabel} onClick={() => spawnTile('terminal')} title="New Terminal (⌘T)">
           <Terminal size={ico} /> <span className="text-[11px]">Terminal</span>
         </button>
-        <button className={btnLabel} onClick={() => spawnTile('http')} title="New HTTP Client (⌘⇧N)">
+        <button className={btnLabel} onClick={() => spawnTile('http')} title="New HTTP Client (⌘⇧H)">
           <Globe size={ico} /> <span className="text-[11px]">HTTP</span>
         </button>
         <button className={btnLabel} onClick={() => spawnTile('postgres')} title="New PostgreSQL Client (⌘⇧P)">
@@ -323,7 +323,7 @@ function ConfirmClearModal({ tileCount, onConfirm, onCancel }: { tileCount: numb
 const SHORTCUTS: { key: string; desc: string }[] = [
   { key: '⌘T', desc: 'New Terminal' },
   { key: '⌘N', desc: 'New Terminal (alias)' },
-  { key: '⌘⇧N', desc: 'New HTTP pane' },
+  { key: '⌘⇧N', desc: 'New Canvas' },
   { key: '⌘⇧P', desc: 'New PostgreSQL pane' },
   { key: '⌘⇧B', desc: 'New Browser pane' },
   { key: '⌘W', desc: 'Close focused tile' },

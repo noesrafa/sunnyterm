@@ -119,7 +119,7 @@ export function useKeyboard() {
         case 'n':
           e.preventDefault()
           if (e.shiftKey) {
-            spawnTile('http')
+            useStore.getState().toggleConfirmClear()
           } else {
             spawnTile('terminal')
           }
@@ -134,6 +134,12 @@ export function useKeyboard() {
           if (e.shiftKey) {
             e.preventDefault()
             spawnTile('browser')
+          }
+          break
+        case 'h':
+          if (e.shiftKey) {
+            e.preventDefault()
+            spawnTile('http')
           }
           break
         case 'w':

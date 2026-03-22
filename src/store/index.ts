@@ -130,6 +130,8 @@ export interface CanvasStore {
   setSelectedIds: (ids: string[]) => void
   clearSelection: () => void
 
+  alignTiles: (direction: 'left' | 'right' | 'top' | 'bottom' | 'h-center' | 'v-center' | 'h-distribute' | 'v-distribute') => void
+
   createSection: (tileIds: string[]) => void
   removeSection: (id: string) => void
   renameSection: (id: string, name: string) => void
@@ -362,6 +364,88 @@ export const useStore = create<CanvasStore>()(
 
     setSelectedIds: (selectedIds) => set({ selectedIds }),
     clearSelection: () => set({ selectedIds: [] }),
+
+    alignTiles: (direction) => {
+      const { selectedIds, tiles } = get()
+      if (selectedIds.length < 2) return
+      const sel = tiles.filter((t) => selectedIds.includes(t.id))
+      const GAP = 24
+
+      let updates: Record<string, { x?: number; y?: number }> = {}
+
+      switch (direction) {
+        case 'left': {
+          const minX = Math.min(...sel.map((t) => t.x))
+          sel.forEach((t) => { updates[t.id] = { x: minX } })
+          break
+        }
+        case 'right': {
+          const maxRight = Math.max(...sel.map((t) => t.x + t.w))
+          sel.forEach((t) => { updates[t.id] = { x: maxRight - t.w } })
+          break
+        }
+        case 'top': {
+          const minY = Math.min(...sel.map((t) => t.y))
+          sel.forEach((t) => { updates[t.id] = { y: minY } })
+          break
+        }
+        case 'bottom': {
+          const maxBottom = Math.max(...sel.map((t) => t.y + t.h))
+          sel.forEach((t) => { updates[t.id] = { y: maxBottom - t.h } })
+          break
+        }
+        case 'h-center': {
+          const minX = Math.min(...sel.map((t) => t.x))
+          const maxRight = Math.max(...sel.map((t) => t.x + t.w))
+          const centerX = (minX + maxRight) / 2
+          sel.forEach((t) => { updates[t.id] = { x: snapToGrid(centerX - t.w / 2) } })
+          break
+        }
+        case 'v-center': {
+          const minY = Math.min(...sel.map((t) => t.y))
+          const maxBottom = Math.max(...sel.map((t) => t.y + t.h))
+          const centerY = (minY + maxBottom) / 2
+          sel.forEach((t) => { updates[t.id] = { y: snapToGrid(centerY - t.h / 2) } })
+          break
+        }
+        case 'h-distribute': {
+          const sorted = [...sel].sort((a, b) => a.x - b.x)
+          const totalW = sorted.reduce((s, t) => s + t.w, 0)
+          const minX = sorted[0].x
+          const maxRight = sorted[sorted.length - 1].x + sorted[sorted.length - 1].w
+          const space = maxRight - minX - totalW
+          const gap = space / (sorted.length - 1)
+          let cx = minX
+          sorted.forEach((t) => {
+            updates[t.id] = { x: snapToGrid(cx) }
+            cx += t.w + gap
+          })
+          break
+        }
+        case 'v-distribute': {
+          const sorted = [...sel].sort((a, b) => a.y - b.y)
+          const totalH = sorted.reduce((s, t) => s + t.h, 0)
+          const minY = sorted[0].y
+          const maxBottom = sorted[sorted.length - 1].y + sorted[sorted.length - 1].h
+          const space = maxBottom - minY - totalH
+          const gap = space / (sorted.length - 1)
+          let cy = minY
+          sorted.forEach((t) => {
+            updates[t.id] = { y: snapToGrid(cy) }
+            cy += t.h + gap
+          })
+          break
+        }
+      }
+
+      set((s) => ({
+        tiles: s.tiles.map((t) => {
+          const u = updates[t.id]
+          if (!u) return t
+          return { ...t, ...u }
+        })
+      }))
+    },
 
     // ── Sections ──────────────────────────────────────────────────────────────
 

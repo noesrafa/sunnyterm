@@ -4,6 +4,7 @@ import { TileContainer, TITLE_BAR_H } from '../tiles/TileContainer'
 import { SectionBox } from './SectionBox'
 import { Minimap } from '../minimap/Minimap'
 import { parseCurl } from '../lib/parseCurl'
+import { AlignStartVertical, AlignEndVertical, AlignStartHorizontal, AlignEndHorizontal, AlignCenterVertical, AlignCenterHorizontal, Rows3, Columns3 } from 'lucide-react'
 import type { DragState, Tile } from '../types'
 
 const RESIZE_HANDLE = 32
@@ -62,6 +63,7 @@ export function InfiniteCanvas() {
   const [lasso, setLasso] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
   const isLassoing = useRef(false)
   const lassoStart = useRef({ x: 0, y: 0 })
+  const [alignMenu, setAlignMenu] = useState<{ x: number; y: number } | null>(null)
 
   // Convert screen coords to canvas coords (accounting for container offset)
   const toCanvas = useCallback(
@@ -132,6 +134,8 @@ export function InfiniteCanvas() {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      setAlignMenu(null)
+
       // Middle mouse, right-click, or space+left = pan
       if (e.button === 1 || e.button === 2 || (e.button === 0 && spaceHeld.current)) {
         isPanning.current = true
@@ -285,16 +289,20 @@ export function InfiniteCanvas() {
     [panBy]
   )
 
-  // ── Context menu (cancel linking) ─────────────────────────────────────────
+  // ── Context menu ─────────────────────────────────────────────────────────
 
   const onContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault()
       if (linkingFromId) {
         cancelLinking()
+        return
+      }
+      if (selectedIds.length >= 2) {
+        setAlignMenu({ x: e.clientX, y: e.clientY })
       }
     },
-    [linkingFromId, cancelLinking]
+    [linkingFromId, cancelLinking, selectedIds]
   )
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -396,6 +404,15 @@ export function InfiniteCanvas() {
       {/* Minimap (fixed overlay, not affected by canvas transform) */}
       {showMinimap && <Minimap />}
 
+      {/* Align context menu */}
+      {alignMenu && selectedIds.length >= 2 && (
+        <AlignMenu
+          x={alignMenu.x}
+          y={alignMenu.y}
+          containerRef={containerRef}
+          onClose={() => setAlignMenu(null)}
+        />
+      )}
     </div>
   )
 }
@@ -458,6 +475,60 @@ function LinkLines({ tiles, panX, panY, zoom }: LinkLinesProps) {
         )
       })}
     </svg>
+  )
+}
+
+// ── Align context menu ──────────────────────────────────────────────────────
+
+function AlignMenu({ x, y, containerRef, onClose }: {
+  x: number; y: number
+  containerRef: React.RefObject<HTMLDivElement | null>
+  onClose: () => void
+}) {
+  const { alignTiles } = useStore()
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [onClose])
+
+  const rect = containerRef.current?.getBoundingClientRect()
+  const menuX = x - (rect?.left ?? 0)
+  const menuY = y - (rect?.top ?? 0)
+
+  const item = 'flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer transition-colors'
+  const sep = 'my-0.5 border-t border-border'
+  const ico = 13
+
+  const handle = (dir: Parameters<typeof alignTiles>[0]) => {
+    alignTiles(dir)
+    onClose()
+  }
+
+  return (
+    <div
+      ref={ref}
+      style={{ position: 'absolute', left: menuX, top: menuY, zIndex: 99999 }}
+      className="w-48 rounded-lg border border-border bg-tile shadow-xl py-1"
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <div className="px-3 py-1 text-[10px] text-text-muted font-medium uppercase tracking-wider">Align</div>
+      <div className={item} onClick={() => handle('left')}><AlignStartVertical size={ico} /> Align Left</div>
+      <div className={item} onClick={() => handle('h-center')}><AlignCenterVertical size={ico} /> Align Center</div>
+      <div className={item} onClick={() => handle('right')}><AlignEndVertical size={ico} /> Align Right</div>
+      <div className={sep} />
+      <div className={item} onClick={() => handle('top')}><AlignStartHorizontal size={ico} /> Align Top</div>
+      <div className={item} onClick={() => handle('v-center')}><AlignCenterHorizontal size={ico} /> Align Middle</div>
+      <div className={item} onClick={() => handle('bottom')}><AlignEndHorizontal size={ico} /> Align Bottom</div>
+      <div className={sep} />
+      <div className="px-3 py-1 text-[10px] text-text-muted font-medium uppercase tracking-wider">Distribute</div>
+      <div className={item} onClick={() => handle('h-distribute')}><Columns3 size={ico} /> Distribute Horizontally</div>
+      <div className={item} onClick={() => handle('v-distribute')}><Rows3 size={ico} /> Distribute Vertically</div>
+    </div>
   )
 }
 
