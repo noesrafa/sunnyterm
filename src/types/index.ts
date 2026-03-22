@@ -1,6 +1,6 @@
 // ─── Tile kinds ───────────────────────────────────────────────────────────────
 
-export type TileKind = 'terminal' | 'http' | 'postgres'
+export type TileKind = 'terminal' | 'http' | 'postgres' | 'browser'
 
 // ─── Section (Figma-style grouping) ──────────────────────────────────────────
 

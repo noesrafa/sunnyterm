@@ -287,7 +287,7 @@ export const useStore = create<CanvasStore>()(
         w: tileW,
         h: tileH,
         name: (() => {
-          const base = kind === 'terminal' ? 'Terminal' : kind === 'http' ? 'HTTP' : 'PostgreSQL'
+          const base = kind === 'terminal' ? 'Terminal' : kind === 'http' ? 'HTTP' : kind === 'postgres' ? 'PostgreSQL' : 'Browser'
           const count = tiles.filter((t) => t.kind === kind).length + 1
           return `${base} ${count}`
         })(),

@@ -5,7 +5,7 @@ import { WorkspacePicker } from './workspace/WorkspacePicker'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useStore, DEFAULT_WORKSPACE } from './store'
 import { FocusView } from './focus/FocusView'
-import { Terminal, Globe, Database, Undo2, Redo2, Map, Search, Sun, Moon, ZoomIn, ZoomOut, FolderOpen, ChevronRight, ChevronLeft } from 'lucide-react'
+import { Terminal, Globe, Database, Compass, Undo2, Redo2, Map, Search, Sun, Moon, ZoomIn, ZoomOut, FolderOpen, ChevronRight, ChevronLeft } from 'lucide-react'
 import type { ViewMode } from './types'
 import { Toaster } from 'sonner'
 
@@ -158,6 +158,9 @@ function Toolbar() {
         </button>
         <button className={btnLabel} onClick={() => spawnTile('postgres')} title="New PostgreSQL Client (⌘⇧P)">
           <Database size={ico} /> <span className="text-[11px]">DB</span>
+        </button>
+        <button className={btnLabel} onClick={() => spawnTile('browser')} title="New Browser (⌘⇧B)">
+          <Compass size={ico} /> <span className="text-[11px]">Browser</span>
         </button>
 
         <div className={sep} />
@@ -323,6 +326,7 @@ const SHORTCUTS: { key: string; desc: string }[] = [
   { key: '⌘N', desc: 'New Terminal (alias)' },
   { key: '⌘⇧N', desc: 'New HTTP pane' },
   { key: '⌘⇧P', desc: 'New PostgreSQL pane' },
+  { key: '⌘⇧B', desc: 'New Browser pane' },
   { key: '⌘W', desc: 'Close focused tile' },
   { key: '⌘Z', desc: 'Undo' },
   { key: '⌘⇧Z', desc: 'Redo' },

@@ -130,6 +130,12 @@ export function useKeyboard() {
             spawnTile('postgres')
           }
           break
+        case 'b':
+          if (e.shiftKey) {
+            e.preventDefault()
+            spawnTile('browser')
+          }
+          break
         case 'w':
           e.preventDefault()
           if (focusedId) removeTile(focusedId)

@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { TerminalTile } from '../tiles/TerminalTile'
 import { HttpTile } from '../tiles/HttpTile'
 import { PostgresTile } from '../tiles/PostgresTile'
+import { BrowserTile } from '../tiles/BrowserTile'
 import { MoreHorizontal, Pencil, Copy, RotateCcw, ClipboardCopy, Link, X } from 'lucide-react'
 import type { Tile } from '../types'
 
@@ -256,6 +257,7 @@ function FocusCard({ tile, cardW, cardH }: { tile: Tile; cardW: number; cardH: n
           )}
           {tile.kind === 'http' && <HttpTile tileId={tile.id} />}
           {tile.kind === 'postgres' && <PostgresTile tileId={tile.id} />}
+          {tile.kind === 'browser' && <BrowserTile tileId={tile.id} />}
         </div>
       </div>
     </div>
@@ -269,7 +271,7 @@ function KindDot({ kind, isExited, isFocused }: { kind: Tile['kind']; isExited: 
     ? 'bg-red-400/60'
     : !isFocused
       ? 'bg-black/15 dark:bg-white/20'
-      : { terminal: 'bg-green-400', http: 'bg-blue-400', postgres: 'bg-purple-400' }[kind]
+      : { terminal: 'bg-green-400', http: 'bg-blue-400', postgres: 'bg-purple-400', browser: 'bg-orange-400' }[kind]
   return <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${colors}`} />
 }
 

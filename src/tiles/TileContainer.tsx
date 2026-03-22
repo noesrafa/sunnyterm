@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { TerminalTile } from './TerminalTile'
 import { HttpTile } from './HttpTile'
 import { PostgresTile } from './PostgresTile'
+import { BrowserTile } from './BrowserTile'
 import { Pencil, Copy, RotateCcw, ClipboardCopy, Link, X, MoreHorizontal } from 'lucide-react'
 import type { Tile } from '../types'
 
@@ -236,6 +237,7 @@ export function TileContainer({ tile, isSelected }: Props) {
             {tile.kind === 'terminal' && <TerminalTile tileId={tile.id} />}
             {tile.kind === 'http' && <HttpTile tileId={tile.id} />}
             {tile.kind === 'postgres' && <PostgresTile tileId={tile.id} />}
+            {tile.kind === 'browser' && <BrowserTile tileId={tile.id} />}
           </TileErrorBoundary>
         </div>
 
@@ -318,6 +320,6 @@ function KindDot({ kind, isExited, isFocused }: { kind: Tile['kind']; isExited: 
     ? 'bg-red-400/60'
     : !isFocused
       ? 'bg-black/15 dark:bg-white/20'
-      : { terminal: 'bg-green-400', http: 'bg-blue-400', postgres: 'bg-purple-400' }[kind]
+      : { terminal: 'bg-green-400', http: 'bg-blue-400', postgres: 'bg-purple-400', browser: 'bg-orange-400' }[kind]
   return <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${colors}`} />
 }
