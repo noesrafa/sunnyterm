@@ -26,9 +26,7 @@
       "output": "release"
     },
     "files": [
-      "out/**/*",
-      "node_modules/**/*",
-      "!node_modules/.cache"
+      "out/**/*"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
@@ -58,31 +56,31 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@tailwindcss/postcss": "^4.2.2",
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
-    "electron": "^41.0.3",
-    "electron-builder": "^26.8.1",
-    "electron-vite": "^5.0.0",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^4.2.2",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.1"
-  },
-  "dependencies": {
-    "@types/pg": "^8.20.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
-    "electron-store": "^8.2.0",
+    "electron": "^41.0.3",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
     "lucide-react": "^0.577.0",
-    "node-pty": "^1.1.0",
-    "pg": "^8.20.0",
+    "postcss": "^8.4.49",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
     "zustand": "^5.0.12"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "node-pty": "^1.1.0",
+    "pg": "^8.20.0"
   },
   "type": "module"
 }
