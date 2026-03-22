@@ -5,7 +5,7 @@ import { WorkspacePicker } from './workspace/WorkspacePicker'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useStore, DEFAULT_WORKSPACE } from './store'
 import { FocusView } from './focus/FocusView'
-import { Terminal, Globe, Database, Compass, Undo2, Redo2, Map, Search, Sun, Moon, ZoomIn, ZoomOut, FolderOpen, ChevronRight, ChevronLeft } from 'lucide-react'
+import { Terminal, Globe, Database, Compass, Undo2, Redo2, Map, Search, Sun, Moon, ZoomIn, ZoomOut, FolderOpen, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import type { ViewMode } from './types'
 import { Toaster } from 'sonner'
 
@@ -154,11 +154,13 @@ function Toolbar() {
           onClick={() => setExpanded((v) => !v)}
           title={expanded ? 'Collapse toolbar' : 'Expand toolbar'}
         >
-          {expanded ? <ChevronLeft size={ico} /> : <ChevronRight size={ico} />}
+          {expanded ? <PanelLeftClose size={ico} /> : <PanelLeftOpen size={ico} />}
         </button>
 
         {expanded && (
           <>
+            <div className={sep} />
+
             <button className={btn} onClick={() => spawnTile('terminal')} title="New Terminal (⌘T)">
               <Terminal size={ico} />
             </button>
