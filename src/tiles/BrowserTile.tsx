@@ -94,7 +94,7 @@ export const BrowserTile = React.memo(function BrowserTile({ tileId }: Props) {
   const openExternal = useCallback(() => {
     const entry = browserRegistry.get(tileId)
     const cur = entry?.currentUrl
-    if (cur && cur !== 'about:blank') window.open(cur, '_blank')
+    if (cur && cur !== 'about:blank') window.electronAPI.openExternal(cur)
   }, [tileId])
 
   // ── Mount / reattach webview ──────────────────────────────────────────────

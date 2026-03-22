@@ -79,6 +79,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   httpRequest: (opts: { method: string; url: string; headers: Record<string, string>; body: string | null }) =>
     ipcRenderer.invoke('http:request', opts),
 
+  // Open URL in user's default browser
+  openExternal: (url: string) =>
+    ipcRenderer.invoke('shell:openExternal', url),
+
   // PostgreSQL operations (via main process using pg)
   pgConnect: (id: string, connectionString: string) =>
     ipcRenderer.invoke('pg:connect', id, connectionString),

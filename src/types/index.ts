@@ -110,6 +110,9 @@ export interface ElectronAPI {
   // URL open requests (link clicks in terminals/webviews)
   onOpenUrl: (callback: (url: string) => void) => () => void
 
+  // Open URL in user's default browser
+  openExternal: (url: string) => Promise<void>
+
   // Workspaces
   workspaceList: () => Promise<string[]>
   workspaceSave: (name: string, layout: WorkspaceLayout) => Promise<void>

@@ -253,6 +253,10 @@ ipcMain.handle('appState:save', (_event, state: Partial<PersistedAppState>) => {
   workspaceManager.saveAppState(state)
 })
 
+ipcMain.handle('shell:openExternal', (_event, url: string) => {
+  shell.openExternal(url)
+})
+
 // ─── HTTP IPC handlers ────────────────────────────────────────────────────────
 
 ipcMain.handle('http:request', async (_event, opts: {
