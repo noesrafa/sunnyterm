@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react'
+import React, { useCallback, useRef } from 'react'
 import { useStore } from '../store'
 
 const MINIMAP_W = 160
@@ -21,11 +21,16 @@ export function Minimap() {
   const isDark = useStore((s) => s.isDark)
   const { setPan } = useStore()
 
-  const handleClick = useCallback(
-    (e: React.MouseEvent<SVGSVGElement>, scale: number, bx: number, by: number) => {
-      const rect = e.currentTarget.getBoundingClientRect()
-      const mx = e.clientX - rect.left
-      const my = e.clientY - rect.top
+  const svgRef = useRef<SVGSVGElement>(null)
+  const isDragging = useRef(false)
+
+  // Convert a minimap pixel position to a canvas-centered pan
+  const panToMiniPos = useCallback(
+    (clientX: number, clientY: number, scale: number, bx: number, by: number) => {
+      const rect = svgRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const mx = clientX - rect.left
+      const my = clientY - rect.top
       const canvasX = mx / scale + bx
       const canvasY = my / scale + by
       setPan(
@@ -65,16 +70,38 @@ export function Minimap() {
   const vpMiniW = vpW * scale
   const vpMiniH = vpH * scale
 
+  const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    e.stopPropagation()
+    isDragging.current = true
+    e.currentTarget.setPointerCapture(e.pointerId)
+    panToMiniPos(e.clientX, e.clientY, scale, bx, by)
+  }
+
+  const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!isDragging.current) return
+    panToMiniPos(e.clientX, e.clientY, scale, bx, by)
+  }
+
+  const onPointerUp = () => {
+    isDragging.current = false
+  }
+
   return (
     <div
       className="absolute bottom-4 right-4 rounded-xl border border-border bg-canvas/90 backdrop-blur-md overflow-hidden"
       style={{ width: MINIMAP_W, height: MINIMAP_H }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
     >
       <svg
+        ref={svgRef}
         width={MINIMAP_W}
         height={MINIMAP_H}
         className="cursor-crosshair"
-        onClick={(e) => handleClick(e, scale, bx, by)}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
       >
         {/* Tiles */}
         {tiles.map((t) => {

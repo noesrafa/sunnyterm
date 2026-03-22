@@ -19,10 +19,11 @@ function AppInner() {
   useKeyboard()
   const isDark = useStore((s) => s.isDark)
   const showShortcuts = useStore((s) => s.showShortcuts)
+  const showConfirmClear = useStore((s) => s.showConfirmClear)
   const savedToast = useStore((s) => s.savedToast)
   const focusedId = useStore((s) => s.focusedId)
   const tiles = useStore((s) => s.tiles)
-  const { initFromPersisted, toggleShortcuts } = useStore()
+  const { initFromPersisted, toggleShortcuts, toggleConfirmClear, clearCanvas } = useStore()
   const initializedRef = useRef(false)
 
   // ── Sync dark class on <html> so CSS variables cascade from root ──────────
@@ -96,6 +97,15 @@ function AppInner() {
         <div className="fixed bottom-4 right-4 bg-green-600/90 text-white text-xs font-medium px-3 py-1.5 rounded shadow-lg pointer-events-none z-[99999] transition-opacity">
           Saved ✓
         </div>
+      )}
+
+      {/* Confirm clear canvas modal */}
+      {showConfirmClear && (
+        <ConfirmClearModal
+          tileCount={tiles.length}
+          onConfirm={clearCanvas}
+          onCancel={toggleConfirmClear}
+        />
       )}
 
       {/* Keyboard shortcuts modal */}
@@ -195,6 +205,50 @@ function Toolbar() {
         <div className={sep} />
 
         <WorkspacePicker />
+      </div>
+    </div>
+  )
+}
+
+// ── Confirm clear modal ──────────────────────────────────────────────────────
+
+function ConfirmClearModal({ tileCount, onConfirm, onCancel }: { tileCount: number; onConfirm: () => void; onCancel: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel()
+      if (e.key === 'Enter') onConfirm()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onConfirm, onCancel])
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-[99998]"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-tile border border-border rounded-lg shadow-2xl p-5 w-80"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-text-primary font-semibold text-sm mb-2">New Canvas</h2>
+        <p className="text-text-muted text-xs mb-4">
+          This will close all {tileCount} tile{tileCount !== 1 ? 's' : ''} and start fresh. This action cannot be undone.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            className="text-xs px-3 py-1.5 rounded-md border border-border text-text-muted hover:text-text-primary hover:bg-black/5 dark:hover:bg-white/8 transition-colors"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            className="text-xs px-3 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700 transition-colors"
+            onClick={onConfirm}
+          >
+            Clear All
+          </button>
+        </div>
       </div>
     </div>
   )

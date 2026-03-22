@@ -42,6 +42,10 @@ function createMenu(): void {
           click: () => sendMenuAction('new-terminal')
         },
         {
+          label: 'New Canvas',
+          click: () => sendMenuAction('new-canvas')
+        },
+        {
           label: 'Close Tile\t⌘W',
           click: () => sendMenuAction('close-tile')
         },

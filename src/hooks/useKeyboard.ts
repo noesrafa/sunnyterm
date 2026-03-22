@@ -64,6 +64,22 @@ export function useKeyboard() {
         }
       }
 
+      // Delete / Backspace — remove focused tile or all selected tiles
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !meta && !e.ctrlKey && !e.altKey) {
+        const tag = (e.target as HTMLElement).tagName
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+          e.preventDefault()
+          const { selectedIds, clearSelection } = useStore.getState()
+          if (selectedIds.length > 0) {
+            selectedIds.forEach((id) => removeTile(id))
+            clearSelection()
+          } else if (focusedId) {
+            removeTile(focusedId)
+          }
+          return
+        }
+      }
+
       // '?' shortcut — show keyboard shortcuts cheatsheet
       if (e.key === '?' && !meta && !e.ctrlKey && !e.altKey) {
         const tag = (e.target as HTMLElement).tagName
@@ -177,6 +193,7 @@ export function useKeyboard() {
     const cleanup = window.electronAPI.onMenuAction((action) => {
       switch (action) {
         case 'new-terminal': spawnTile('terminal'); break
+        case 'new-canvas': useStore.getState().toggleConfirmClear(); break
         case 'close-tile': if (focusedId) removeTile(focusedId); break
         case 'save-workspace': saveWorkspace(undefined, true); break
         case 'undo': undo(); break

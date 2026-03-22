@@ -57,6 +57,7 @@ export interface CanvasStore {
 
   // UI state
   showShortcuts: boolean
+  showConfirmClear: boolean
   savedToast: boolean
   exitedTileIds: string[]
 
@@ -105,6 +106,8 @@ export interface CanvasStore {
 
   toggleDark: () => void
   toggleShortcuts: () => void
+  toggleConfirmClear: () => void
+  clearCanvas: () => void
   triggerSavedToast: () => void
 
   markTileExited: (id: string) => void
@@ -144,6 +147,7 @@ export const useStore = create<CanvasStore>()(
     redoStack: [],
     isDark: true,
     showShortcuts: false,
+    showConfirmClear: false,
     savedToast: false,
     exitedTileIds: [],
     workspaces: [],
@@ -353,6 +357,26 @@ export const useStore = create<CanvasStore>()(
     toggleSearch: () => set((s) => ({ searchOpen: !s.searchOpen })),
     setSearchQuery: (searchQuery) => set({ searchQuery }),
     toggleShortcuts: () => set((s) => ({ showShortcuts: !s.showShortcuts })),
+    toggleConfirmClear: () => set((s) => ({ showConfirmClear: !s.showConfirmClear })),
+    clearCanvas: () => {
+      const { tiles } = get()
+      // Kill all PTYs
+      for (const t of tiles) {
+        if (t.kind === 'terminal') {
+          window.electronAPI.ptyKill(t.id).catch(() => {})
+        }
+      }
+      set({
+        tiles: [],
+        focusedId: null,
+        selectedIds: [],
+        linkingFromId: null,
+        undoStack: [],
+        redoStack: [],
+        exitedTileIds: [],
+        showConfirmClear: false
+      })
+    },
 
     triggerSavedToast: () => {
       set({ savedToast: true })
