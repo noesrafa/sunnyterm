@@ -3,8 +3,7 @@ import { useStore } from '../store'
 import { TerminalTile } from '../tiles/TerminalTile'
 import { HttpTile } from '../tiles/HttpTile'
 import { PostgresTile } from '../tiles/PostgresTile'
-import { BrowserTile } from '../tiles/BrowserTile'
-import { MoreHorizontal, Pencil, Copy, RotateCcw, ClipboardCopy, Link, X } from 'lucide-react'
+import { MoreHorizontal, Pencil, Copy, RotateCcw, ClipboardCopy, Link, X, Compass } from 'lucide-react'
 import type { Tile } from '../types'
 
 const TITLE_BAR_H = 36
@@ -257,7 +256,7 @@ function FocusCard({ tile, cardW, cardH }: { tile: Tile; cardW: number; cardH: n
           )}
           {tile.kind === 'http' && <HttpTile tileId={tile.id} />}
           {tile.kind === 'postgres' && <PostgresTile tileId={tile.id} />}
-          {tile.kind === 'browser' && <BrowserTile tileId={tile.id} />}
+          {tile.kind === 'browser' && <BrowserFocusPlaceholder tile={tile} />}
         </div>
       </div>
     </div>
@@ -282,6 +281,25 @@ function CtxItem({ icon, label, onClick, danger }: { icon: React.ReactNode; labe
       onClick={onClick}
     >
       {icon} {label}
+    </div>
+  )
+}
+
+function BrowserFocusPlaceholder({ tile }: { tile: Tile }) {
+  const url = tile.initialUrl ?? 'No page loaded'
+  const { setViewMode } = useStore()
+
+  return (
+    <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-text-muted">
+      <Compass size={40} className="opacity-15" />
+      <p className="text-xs font-medium text-text-secondary">Browser Preview</p>
+      <p className="text-[11px] font-mono opacity-60 max-w-xs truncate">{url}</p>
+      <button
+        onClick={() => setViewMode('canvas')}
+        className="mt-2 px-3 py-1.5 text-[11px] rounded-md bg-white/8 hover:bg-white/12 text-text-secondary hover:text-text-primary transition-colors"
+      >
+        Switch to Canvas to interact
+      </button>
     </div>
   )
 }

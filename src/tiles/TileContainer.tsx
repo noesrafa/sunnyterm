@@ -237,12 +237,18 @@ export function TileContainer({ tile, isSelected }: Props) {
         {/* Content area — skip rendering when canvas is hidden (focus mode)
             to avoid competing with FocusView for xterm/webview elements */}
         <div className="flex-1 min-h-0 overflow-hidden">
-          {showContent && (
+          {/* Browser tiles stay mounted (hidden) to avoid expensive webview detach/reattach */}
+          {tile.kind === 'browser' ? (
+            <div style={{ visibility: showContent ? 'visible' : 'hidden', height: '100%' }}>
+              <TileErrorBoundary tileId={tile.id}>
+                <BrowserTile tileId={tile.id} />
+              </TileErrorBoundary>
+            </div>
+          ) : showContent && (
             <TileErrorBoundary tileId={tile.id}>
               {tile.kind === 'terminal' && <TerminalTile tileId={tile.id} />}
               {tile.kind === 'http' && <HttpTile tileId={tile.id} />}
               {tile.kind === 'postgres' && <PostgresTile tileId={tile.id} />}
-              {tile.kind === 'browser' && <BrowserTile tileId={tile.id} />}
             </TileErrorBoundary>
           )}
         </div>
