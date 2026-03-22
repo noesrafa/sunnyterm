@@ -121,12 +121,12 @@ export function BrowserTile({ tileId }: Props) {
         </button>
       </form>
 
-      {/* Webview */}
-      <div className="flex-1 min-h-0">
+      {/* Webview — needs absolute positioning; flex/h-full don't work reliably with <webview> */}
+      <div className="flex-1 min-h-0 relative">
         <webview
           ref={webviewRef as any}
           src={url}
-          className="w-full h-full"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
           // @ts-ignore — webview attributes
           allowpopups="true"
         />

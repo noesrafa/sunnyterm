@@ -145,10 +145,15 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
 
     setExitInfo(null)
 
-    // Create a detached wrapper div for xterm to render into
+    // Create a detached wrapper div for xterm to render into.
+    // Padding lives here (not on containerRef) so xterm's mouse coordinate
+    // mapping stays aligned — xterm uses getBoundingClientRect on its own
+    // elements, and extra parent padding would shift the offset.
     const xtermElement = document.createElement('div')
     xtermElement.style.width = '100%'
     xtermElement.style.height = '100%'
+    xtermElement.style.padding = '6px 8px'
+    xtermElement.style.boxSizing = 'border-box'
     containerRef.current.appendChild(xtermElement)
 
     const term = new Terminal({
@@ -353,7 +358,7 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
 
   return (
     <div className="w-full h-full relative">
-      <div ref={containerRef} className="w-full h-full" style={{ padding: '6px 8px' }} />
+      <div ref={containerRef} className="w-full h-full" />
 
       {exitInfo !== null && (
         <div
