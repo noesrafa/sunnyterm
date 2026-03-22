@@ -265,7 +265,7 @@ export const useStore = create<CanvasStore>()(
       const boxH = maxY - minY
       const vpW = window.innerWidth
       const vpH = window.innerHeight - 40
-      const newZoom = Math.min(vpW / boxW, vpH / boxH, 2)
+      const newZoom = Math.max(0.5, Math.min(vpW / boxW, vpH / boxH, 2))
       const panX = (vpW - boxW * newZoom) / 2 - minX * newZoom
       const panY = (vpH - boxH * newZoom) / 2 - minY * newZoom
       set({ zoom: newZoom, panX, panY })
