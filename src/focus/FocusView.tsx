@@ -9,6 +9,7 @@ import { MoreHorizontal, Pencil, Copy, RotateCcw, ClipboardCopy, Link, X } from 
 import type { Tile } from '../types'
 
 const TITLE_BAR_H = 36
+const TAB_BAR_H = 32
 
 /** Extract the creation timestamp from a tile ID like "tile-1710834569123-0" */
 function tileCreatedAt(tile: Tile): number {
@@ -16,8 +17,14 @@ function tileCreatedAt(tile: Tile): number {
   return parseInt(parts[1], 10) || 0
 }
 
+// Persistent tab order across re-renders (keyed by tile id set)
+const tabOrderCache = new Map<string, string[]>()
+
 export function FocusView() {
   const tiles = useStore((s) => s.tiles)
+  const focusedId = useStore((s) => s.focusedId)
+  const exitedTileIds = useStore((s) => s.exitedTileIds)
+  const { focusTile } = useStore()
   const scrollRef = useRef<HTMLDivElement>(null)
   const [containerH, setContainerH] = useState(0)
   const [containerW, setContainerW] = useState(0)
@@ -36,33 +43,189 @@ export function FocusView() {
     return () => ro.disconnect()
   }, [])
 
-  // Sort tiles by creation date
-  const sorted = [...tiles].sort((a, b) => tileCreatedAt(a) - tileCreatedAt(b))
+  // Maintain a custom tab order that supports drag reordering
+  const defaultOrder = [...tiles].sort((a, b) => tileCreatedAt(a) - tileCreatedAt(b)).map((t) => t.id)
+  const tileIds = new Set(tiles.map((t) => t.id))
+  const cacheKey = [...tileIds].sort().join(',')
+
+  const [tabOrder, setTabOrder] = useState<string[]>(() => {
+    return tabOrderCache.get(cacheKey) || defaultOrder
+  })
+
+  // Sync tab order when tiles are added/removed
+  useEffect(() => {
+    setTabOrder((prev) => {
+      const existing = prev.filter((id) => tileIds.has(id))
+      const newIds = defaultOrder.filter((id) => !prev.includes(id))
+      const merged = [...existing, ...newIds]
+      tabOrderCache.set(cacheKey, merged)
+      return merged
+    })
+  }, [cacheKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sorted = tabOrder.map((id) => tiles.find((t) => t.id === id)!).filter(Boolean)
 
   const cardW = Math.round(containerW * 0.7)
-  const cardH = containerH
+  const cardH = containerH - TAB_BAR_H
+
+  const focusedIdx = sorted.findIndex((t) => t.id === focusedId)
+
+  const goNext = useCallback(() => {
+    if (sorted.length < 2) return
+    const next = (focusedIdx + 1) % sorted.length
+    focusTile(sorted[next].id)
+  }, [sorted, focusedIdx, focusTile])
+
+  const goPrev = useCallback(() => {
+    if (sorted.length < 2) return
+    const prev = (focusedIdx - 1 + sorted.length) % sorted.length
+    focusTile(sorted[prev].id)
+  }, [sorted, focusedIdx, focusTile])
+
+  // Allow trackpad horizontal scroll — convert vertical wheel to horizontal scroll
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const handler = (e: WheelEvent) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return
+      e.preventDefault()
+      el.scrollLeft += e.deltaY
+    }
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [])
+
+  // Drag & drop reorder state
+  const [dragTabId, setDragTabId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const dropAfter = useRef(false)
+
+  const handleDragStart = useCallback((e: React.DragEvent, tileId: string) => {
+    setDragTabId(tileId)
+    e.dataTransfer.effectAllowed = 'move'
+    if (e.currentTarget instanceof HTMLElement) {
+      e.dataTransfer.setDragImage(e.currentTarget, e.currentTarget.offsetWidth / 2, e.currentTarget.offsetHeight / 2)
+    }
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent, tileId: string) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDropTargetId(tileId)
+    // Determine if cursor is in the right half of the target → insert after
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    dropAfter.current = e.clientX > rect.left + rect.width / 2
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
+    e.preventDefault()
+    if (!dragTabId || dragTabId === targetId) {
+      setDragTabId(null)
+      setDropTargetId(null)
+      return
+    }
+    const movedId = dragTabId
+    setTabOrder((prev) => {
+      const next = prev.filter((id) => id !== movedId)
+      const targetIdx = next.indexOf(targetId)
+      const insertIdx = dropAfter.current ? targetIdx + 1 : targetIdx
+      next.splice(insertIdx, 0, movedId)
+      tabOrderCache.set(cacheKey, next)
+      return next
+    })
+    focusTile(movedId)
+    setDragTabId(null)
+    setDropTargetId(null)
+  }, [dragTabId, cacheKey, focusTile])
+
+  const handleDragEnd = useCallback(() => {
+    setDragTabId(null)
+    setDropTargetId(null)
+  }, [])
 
   return (
-    <div
-      ref={scrollRef}
-      className="w-full h-full overflow-x-auto overflow-y-hidden flex items-stretch"
-      style={{ scrollSnapType: 'x mandatory' }}
-    >
-      <div className="flex items-stretch shrink-0" style={{ gap: 0 }}>
-        {/* Left padding to center first card */}
-        <div style={{ width: Math.round(containerW * 0.15) }} className="shrink-0" />
+    <div className="w-full h-full flex flex-col">
+      {/* Tab bar */}
+      <div
+        className="shrink-0 flex items-center gap-0.5 px-2 overflow-x-auto"
+        style={{ height: TAB_BAR_H, scrollbarWidth: 'none' }}
+      >
+        {sorted.map((tile) => {
+          const isFocused = tile.id === focusedId
+          const isExited = exitedTileIds.includes(tile.id)
+          const isDragging = dragTabId === tile.id
+          const isDropTarget = dropTargetId === tile.id && dragTabId !== tile.id
+          return (
+            <button
+              key={tile.id}
+              draggable
+              onDragStart={(e) => handleDragStart(e, tile.id)}
+              onDragOver={(e) => handleDragOver(e, tile.id)}
+              onDrop={(e) => handleDrop(e, tile.id)}
+              onDragEnd={handleDragEnd}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-grab active:cursor-grabbing transition-all border ${
+                isFocused
+                  ? 'border-white/25 text-text-primary'
+                  : 'border-border text-text-muted hover:text-text-secondary'
+              } ${isDragging ? 'opacity-40' : ''} ${isDropTarget ? 'border-white/40 scale-105' : ''}`}
+              onClick={() => focusTile(tile.id)}
+            >
+              <KindDot kind={tile.kind} isExited={isExited} isFocused={isFocused} small />
+              <span className="truncate max-w-[100px]">{tile.name}</span>
+            </button>
+          )
+        })}
+      </div>
 
-        {sorted.map((tile) => (
-          <FocusCard
-            key={tile.id}
-            tile={tile}
-            cardW={cardW}
-            cardH={cardH}
-          />
-        ))}
+      {/* Content area with cards */}
+      <div className="flex-1 min-h-0 relative">
+        {/* Left nav button */}
+        {sorted.length > 1 && (
+          <button
+            className="absolute left-3 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-surface/80 backdrop-blur border border-border flex items-center justify-center cursor-pointer hover:bg-surface transition-colors"
+            onClick={goPrev}
+          >
+            <svg className="w-4 h-4 text-text-secondary" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 3L5 8l5 5" />
+            </svg>
+          </button>
+        )}
 
-        {/* Right padding to allow last card to scroll to center */}
-        <div style={{ width: Math.round(containerW * 0.15) }} className="shrink-0" />
+        {/* Right nav button */}
+        {sorted.length > 1 && (
+          <button
+            className="absolute right-3 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-surface/80 backdrop-blur border border-border flex items-center justify-center cursor-pointer hover:bg-surface transition-colors"
+            onClick={goNext}
+          >
+            <svg className="w-4 h-4 text-text-secondary" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 3l5 5-5 5" />
+            </svg>
+          </button>
+        )}
+
+        {/* Scrollable cards */}
+        <div
+          ref={scrollRef}
+          className="w-full h-full overflow-x-auto overflow-y-hidden flex items-stretch"
+          style={{ scrollSnapType: 'x mandatory', scrollbarWidth: 'none' }}
+        >
+          <div className="flex items-stretch shrink-0" style={{ gap: 0 }}>
+            {/* Left padding to center first card */}
+            <div style={{ width: Math.round(containerW * 0.15) }} className="shrink-0" />
+
+            {sorted.map((tile) => (
+              <FocusCard
+                key={tile.id}
+                tile={tile}
+                cardW={cardW}
+                cardH={cardH}
+              />
+            ))}
+
+            {/* Right padding to allow last card to scroll to center */}
+            <div style={{ width: Math.round(containerW * 0.15) }} className="shrink-0" />
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -259,7 +422,7 @@ function FocusCard({ tile, cardW, cardH }: { tile: Tile; cardW: number; cardH: n
           {tile.kind === 'http' && <HttpTile tileId={tile.id} />}
           {tile.kind === 'postgres' && <PostgresTile tileId={tile.id} />}
           {tile.kind === 'browser' && <BrowserTile tileId={tile.id} />}
-            {tile.kind === 'file' && <FileViewerTile tileId={tile.id} />}
+          {tile.kind === 'file' && <FileViewerTile tileId={tile.id} />}
         </div>
       </div>
     </div>
@@ -268,13 +431,14 @@ function FocusCard({ tile, cardW, cardH }: { tile: Tile; cardW: number; cardH: n
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-function KindDot({ kind, isExited, isFocused }: { kind: Tile['kind']; isExited: boolean; isFocused: boolean }) {
+function KindDot({ kind, isExited, isFocused, small }: { kind: Tile['kind']; isExited: boolean; isFocused: boolean; small?: boolean }) {
   const colors = isExited
     ? 'bg-red-400/60'
     : !isFocused
       ? 'bg-black/15 dark:bg-white/20'
       : { terminal: 'bg-green-400', http: 'bg-blue-400', postgres: 'bg-purple-400', browser: 'bg-orange-400', file: 'bg-amber-400' }[kind]
-  return <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${colors}`} />
+  const size = small ? 'w-1.5 h-1.5' : 'w-2.5 h-2.5'
+  return <div className={`${size} rounded-full shrink-0 ${colors}`} />
 }
 
 function CtxItem({ icon, label, onClick, danger }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) {
@@ -287,4 +451,3 @@ function CtxItem({ icon, label, onClick, danger }: { icon: React.ReactNode; labe
     </div>
   )
 }
-
