@@ -1,14 +1,65 @@
-import { createHighlighter, type Highlighter, type BundledLanguage } from 'shiki'
+import { createHighlighterCore, type HighlighterCore } from '@shikijs/core'
+import { createOnigurumaEngine } from '@shikijs/engine-oniguruma'
 import type { ThemeName } from './themes'
 
-let highlighter: Highlighter | null = null
-let initPromise: Promise<Highlighter> | null = null
+let highlighter: HighlighterCore | null = null
+let initPromise: Promise<HighlighterCore> | null = null
 
 const SHIKI_THEMES: Record<ThemeName, string> = {
   dark: 'github-dark',
   light: 'github-light',
   claude: 'monokai',
   vino: 'dracula'
+}
+
+// Only the languages we actually support — imported statically so tree-shaking works
+const LANG_IMPORTS: Record<string, () => Promise<any>> = {
+  javascript: () => import('@shikijs/langs/javascript'),
+  typescript: () => import('@shikijs/langs/typescript'),
+  tsx: () => import('@shikijs/langs/tsx'),
+  jsx: () => import('@shikijs/langs/jsx'),
+  json: () => import('@shikijs/langs/json'),
+  jsonc: () => import('@shikijs/langs/jsonc'),
+  html: () => import('@shikijs/langs/html'),
+  css: () => import('@shikijs/langs/css'),
+  scss: () => import('@shikijs/langs/scss'),
+  less: () => import('@shikijs/langs/less'),
+  bash: () => import('@shikijs/langs/bash'),
+  python: () => import('@shikijs/langs/python'),
+  ruby: () => import('@shikijs/langs/ruby'),
+  rust: () => import('@shikijs/langs/rust'),
+  go: () => import('@shikijs/langs/go'),
+  java: () => import('@shikijs/langs/java'),
+  kotlin: () => import('@shikijs/langs/kotlin'),
+  swift: () => import('@shikijs/langs/swift'),
+  c: () => import('@shikijs/langs/c'),
+  cpp: () => import('@shikijs/langs/cpp'),
+  csharp: () => import('@shikijs/langs/csharp'),
+  php: () => import('@shikijs/langs/php'),
+  lua: () => import('@shikijs/langs/lua'),
+  yaml: () => import('@shikijs/langs/yaml'),
+  toml: () => import('@shikijs/langs/toml'),
+  xml: () => import('@shikijs/langs/xml'),
+  markdown: () => import('@shikijs/langs/markdown'),
+  mdx: () => import('@shikijs/langs/mdx'),
+  sql: () => import('@shikijs/langs/sql'),
+  graphql: () => import('@shikijs/langs/graphql'),
+  dockerfile: () => import('@shikijs/langs/dockerfile'),
+  makefile: () => import('@shikijs/langs/makefile'),
+  vue: () => import('@shikijs/langs/vue'),
+  svelte: () => import('@shikijs/langs/svelte'),
+  r: () => import('@shikijs/langs/r'),
+  dart: () => import('@shikijs/langs/dart'),
+  zig: () => import('@shikijs/langs/zig'),
+  hcl: () => import('@shikijs/langs/hcl'),
+  prisma: () => import('@shikijs/langs/prisma'),
+}
+
+const THEME_IMPORTS = {
+  'github-dark': () => import('@shikijs/themes/github-dark'),
+  'github-light': () => import('@shikijs/themes/github-light'),
+  'monokai': () => import('@shikijs/themes/monokai'),
+  'dracula': () => import('@shikijs/themes/dracula'),
 }
 
 const EXT_TO_LANG: Record<string, string> = {
@@ -34,20 +85,30 @@ const EXT_TO_LANG: Record<string, string> = {
   txt: 'text', log: 'text', csv: 'text'
 }
 
-// Start with a small core set of langs for fast init, load others on demand
-const CORE_LANGS: BundledLanguage[] = [
-  'javascript', 'typescript', 'tsx', 'jsx', 'json',
-  'html', 'css', 'bash', 'python', 'markdown'
-]
-
-async function getHighlighter(): Promise<Highlighter> {
+async function getHighlighter(): Promise<HighlighterCore> {
   if (highlighter) return highlighter
   if (initPromise) return initPromise
 
-  initPromise = createHighlighter({
-    themes: ['github-dark', 'github-light', 'monokai', 'dracula'],
-    langs: CORE_LANGS
-  })
+  initPromise = (async () => {
+    // Load themes
+    const themes = await Promise.all(
+      Object.values(THEME_IMPORTS).map((fn) => fn().then((m) => m.default))
+    )
+
+    // Load core langs for fast startup
+    const coreLangs = ['javascript', 'typescript', 'tsx', 'jsx', 'json', 'html', 'css', 'bash', 'python', 'markdown']
+    const langs = await Promise.all(
+      coreLangs.map((l) => LANG_IMPORTS[l]().then((m) => m.default))
+    )
+
+    const h = await createHighlighterCore({
+      themes,
+      langs,
+      engine: createOnigurumaEngine(() => import('shiki/wasm'))
+    })
+
+    return h
+  })()
 
   highlighter = await initPromise
   return highlighter
@@ -55,7 +116,6 @@ async function getHighlighter(): Promise<Highlighter> {
 
 export function getLanguageFromFilename(filename: string): string {
   const lower = filename.toLowerCase()
-  // Handle dotfiles like Makefile, Dockerfile
   const base = lower.split('/').pop() || ''
   if (base === 'makefile') return 'makefile'
   if (base === 'dockerfile') return 'dockerfile'
@@ -87,11 +147,15 @@ export async function highlightCode(
 
     // Lazy-load language if not yet loaded
     const loadedLangs = h.getLoadedLanguages()
-    if (!loadedLangs.includes(lang as any)) {
+    if (!loadedLangs.includes(lang)) {
+      const importer = LANG_IMPORTS[lang]
+      if (!importer) {
+        return `<pre style="margin:0;white-space:pre-wrap;word-break:break-all;">${escapeHtml(code)}</pre>`
+      }
       try {
-        await h.loadLanguage(lang as BundledLanguage)
+        const mod = await importer()
+        await h.loadLanguage(mod.default)
       } catch {
-        // Language not available in shiki bundle — fall through to plain text
         return `<pre style="margin:0;white-space:pre-wrap;word-break:break-all;">${escapeHtml(code)}</pre>`
       }
     }
