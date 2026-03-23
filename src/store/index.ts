@@ -133,7 +133,7 @@ export interface CanvasStore {
   setSelectedIds: (ids: string[]) => void
   clearSelection: () => void
 
-  alignTiles: (direction: 'left' | 'right' | 'top' | 'bottom' | 'h-center' | 'v-center' | 'h-distribute' | 'v-distribute') => void
+  alignTiles: (direction: 'left' | 'right' | 'top' | 'bottom' | 'h-center' | 'v-center' | 'h-distribute' | 'v-distribute' | 'grid') => void
 
   createSection: (tileIds: string[]) => void
   removeSection: (id: string) => void
@@ -433,6 +433,22 @@ export const useStore = create<CanvasStore>()(
           sorted.forEach((t) => {
             updates[t.id] = { y: snapToGrid(cy) }
             cy += t.h + gap
+          })
+          break
+        }
+        case 'grid': {
+          const gap = 24
+          const cols = Math.ceil(Math.sqrt(sel.length))
+          const sorted = [...sel].sort((a, b) => a.x - b.x || a.y - b.y)
+          const startX = Math.min(...sorted.map((t) => t.x))
+          const startY = Math.min(...sorted.map((t) => t.y))
+          sorted.forEach((t, i) => {
+            const col = i % cols
+            const row = Math.floor(i / cols)
+            updates[t.id] = {
+              x: snapToGrid(startX + col * (t.w + gap)),
+              y: snapToGrid(startY + row * (t.h + gap))
+            }
           })
           break
         }

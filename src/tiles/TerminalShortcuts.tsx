@@ -186,23 +186,40 @@ export function TerminalShortcuts({ tileId }: Props) {
         </div>
       )}
 
-      {/* Trigger button */}
-      <button
-        onClick={() => { setOpen(!open); setAdding(false) }}
-        className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium cursor-pointer backdrop-blur-sm transition-all duration-150"
-        style={{
-          color: 'var(--text-muted)',
-          background: 'var(--titlebar)',
-        }}
-        title="Terminal shortcuts"
-      >
-        <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M13 1H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2Z" />
-          <path d="M4 5l3 3-3 3" />
-          <path d="M9 11h3" />
-        </svg>
-        <span>Shortcuts</span>
-      </button>
+      {/* Buttons row */}
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => { setOpen(!open); setAdding(false) }}
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium cursor-pointer backdrop-blur-sm transition-all duration-150"
+          style={{
+            color: 'var(--text-muted)',
+            background: 'var(--titlebar)',
+          }}
+          title="Terminal shortcuts"
+        >
+          <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M13 1H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2Z" />
+            <path d="M4 5l3 3-3 3" />
+            <path d="M9 11h3" />
+          </svg>
+          <span>Shortcuts</span>
+        </button>
+
+        <button
+          onClick={() => window.electronAPI.ptyWrite(tileId, '\x03')}
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium cursor-pointer backdrop-blur-sm transition-all duration-150"
+          style={{
+            color: 'var(--text-muted)',
+            background: 'var(--titlebar)',
+          }}
+          title="Send Ctrl+C"
+        >
+          <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 4l8 8M12 4l-8 8" />
+          </svg>
+          <span>Kill</span>
+        </button>
+      </div>
     </div>
   )
 }

@@ -4,7 +4,7 @@ import { TileContainer, TITLE_BAR_H } from '../tiles/TileContainer'
 import { SectionBox } from './SectionBox'
 import { Minimap } from '../minimap/Minimap'
 import { parseCurl } from '../lib/parseCurl'
-import { AlignStartVertical, AlignEndVertical, AlignStartHorizontal, AlignEndHorizontal, AlignCenterVertical, AlignCenterHorizontal, Rows3, Columns3, Terminal, Globe, Database, Compass, FolderOpen } from 'lucide-react'
+import { AlignStartVertical, AlignEndVertical, AlignStartHorizontal, AlignEndHorizontal, AlignCenterVertical, AlignCenterHorizontal, Rows3, Columns3, LayoutGrid, Terminal, Globe, Database, Compass, FolderOpen } from 'lucide-react'
 import type { DragState, Tile } from '../types'
 
 const RESIZE_HANDLE = 32
@@ -611,6 +611,7 @@ function AlignMenu({ x, y, containerRef, onClose }: {
       <div className="px-3 py-1 text-[10px] text-text-muted font-medium uppercase tracking-wider">Distribute</div>
       <div className={item} onClick={() => handle('h-distribute')}><Columns3 size={ico} /> Distribute Horizontally</div>
       <div className={item} onClick={() => handle('v-distribute')}><Rows3 size={ico} /> Distribute Vertically</div>
+      <div className={item} onClick={() => handle('grid')}><LayoutGrid size={ico} /> Arrange in Grid</div>
     </div>
   )
 }

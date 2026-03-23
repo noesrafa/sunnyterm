@@ -7,7 +7,7 @@ import { BrowserTile } from '../tiles/BrowserTile'
 import { FileViewerTile } from '../tiles/FileViewerTile'
 import { MoreHorizontal, Pencil, Copy, RotateCcw, ClipboardCopy, Link, X } from 'lucide-react'
 import { TileKindIcon } from '../tiles/TileKindIcon'
-import type { Tile } from '../types'
+import type { Tile, TileKind } from '../types'
 
 const TITLE_BAR_H = 36
 const TAB_BAR_H = 32
@@ -25,8 +25,11 @@ export function FocusView() {
   const tiles = useStore((s) => s.tiles)
   const focusedId = useStore((s) => s.focusedId)
   const exitedTileIds = useStore((s) => s.exitedTileIds)
-  const { focusTile } = useStore()
+  const { focusTile, spawnTile } = useStore()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [showCreateMenu, setShowCreateMenu] = useState(false)
+  const createMenuRef = useRef<HTMLDivElement>(null)
+  const createBtnRef = useRef<HTMLButtonElement>(null)
   const [containerH, setContainerH] = useState(0)
   const [containerW, setContainerW] = useState(0)
 
@@ -43,6 +46,25 @@ export function FocusView() {
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // Close create menu on outside click
+  useEffect(() => {
+    if (!showCreateMenu) return
+    const handle = (e: MouseEvent) => {
+      if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node) &&
+          createBtnRef.current && !createBtnRef.current.contains(e.target as Node)) {
+        setShowCreateMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [showCreateMenu])
+
+  const handleCreateTile = useCallback((kind: TileKind) => {
+    setShowCreateMenu(false)
+    const newTile = spawnTile(kind)
+    focusTile(newTile.id)
+  }, [spawnTile, focusTile])
 
   // Maintain a custom tab order that supports drag reordering
   const defaultOrder = [...tiles].sort((a, b) => tileCreatedAt(a) - tileCreatedAt(b)).map((t) => t.id)
@@ -147,35 +169,77 @@ export function FocusView() {
   return (
     <div className="w-full h-full flex flex-col overflow-hidden" style={{ overscrollBehavior: 'contain' }}>
       {/* Tab bar */}
-      <div
-        className="shrink-0 flex items-center gap-0.5 px-2 overflow-x-auto"
-        style={{ height: TAB_BAR_H, scrollbarWidth: 'none', overscrollBehavior: 'contain' }}
-      >
-        {sorted.map((tile) => {
-          const isFocused = tile.id === focusedId
-          const isExited = exitedTileIds.includes(tile.id)
-          const isDragging = dragTabId === tile.id
-          const isDropTarget = dropTargetId === tile.id && dragTabId !== tile.id
-          return (
-            <button
-              key={tile.id}
-              draggable
-              onDragStart={(e) => handleDragStart(e, tile.id)}
-              onDragOver={(e) => handleDragOver(e, tile.id)}
-              onDrop={(e) => handleDrop(e, tile.id)}
-              onDragEnd={handleDragEnd}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-grab active:cursor-grabbing border transition-colors ${
-                isFocused
-                  ? 'border-white/10 text-text-primary'
-                  : 'border-transparent text-text-muted hover:text-text-secondary'
-              } ${isDragging ? 'opacity-40' : ''} ${isDropTarget ? '!border-white/40 scale-105' : ''}`}
-              onClick={() => focusTile(tile.id)}
+      <div className="shrink-0 flex items-center" style={{ height: TAB_BAR_H }}>
+        {/* Scrollable tabs */}
+        <div
+          className="flex-1 flex items-center gap-0.5 px-2 overflow-x-auto min-w-0"
+          style={{ scrollbarWidth: 'none', overscrollBehavior: 'contain' }}
+        >
+          {sorted.map((tile) => {
+            const isFocused = tile.id === focusedId
+            const isExited = exitedTileIds.includes(tile.id)
+            const isDragging = dragTabId === tile.id
+            const isDropTarget = dropTargetId === tile.id && dragTabId !== tile.id
+            return (
+              <button
+                key={tile.id}
+                draggable
+                onDragStart={(e) => handleDragStart(e, tile.id)}
+                onDragOver={(e) => handleDragOver(e, tile.id)}
+                onDrop={(e) => handleDrop(e, tile.id)}
+                onDragEnd={handleDragEnd}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-grab active:cursor-grabbing border transition-colors ${
+                  isFocused
+                    ? 'border-white/10 text-text-primary'
+                    : 'border-transparent text-text-muted hover:text-text-secondary'
+                } ${isDragging ? 'opacity-40' : ''} ${isDropTarget ? '!border-white/40 scale-105' : ''}`}
+                onClick={() => focusTile(tile.id)}
+              >
+                <TileKindIcon kind={tile.kind} active={isFocused} exited={isExited} size={11} />
+                <span className="truncate max-w-[100px]">{tile.name}</span>
+              </button>
+            )
+          })}
+        </div>
+
+        {/* + button */}
+        <div className="shrink-0 pr-2 relative">
+          <button
+            ref={createBtnRef}
+            onClick={() => setShowCreateMenu((v) => !v)}
+            className="flex items-center justify-center w-6 h-6 rounded-lg cursor-pointer transition-colors border border-transparent hover:border-border"
+            style={{ color: 'var(--text-muted)' }}
+            title="New tile"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M8 3v10M3 8h10" />
+            </svg>
+          </button>
+
+          {showCreateMenu && (
+            <div
+              ref={createMenuRef}
+              className="absolute top-8 right-2 w-40 rounded-lg border border-border bg-tile shadow-xl py-1 z-50"
             >
-              <TileKindIcon kind={tile.kind} active={isFocused} exited={isExited} size={11} />
-              <span className="truncate max-w-[100px]">{tile.name}</span>
-            </button>
-          )
-        })}
+              {([
+                { kind: 'terminal' as TileKind, label: 'Terminal' },
+                { kind: 'http' as TileKind, label: 'HTTP' },
+                { kind: 'postgres' as TileKind, label: 'PostgreSQL' },
+                { kind: 'browser' as TileKind, label: 'Browser' },
+                { kind: 'file' as TileKind, label: 'File Viewer' },
+              ]).map(({ kind, label }) => (
+                <div
+                  key={kind}
+                  className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer transition-colors"
+                  onClick={() => handleCreateTile(kind)}
+                >
+                  <TileKindIcon kind={kind} active size={12} />
+                  {label}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Content area with cards */}
