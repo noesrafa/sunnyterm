@@ -240,8 +240,8 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
     const interceptor = new InputInterceptor(term, {
       ptyWrite: (data) => window.electronAPI.ptyWrite(tileId, data),
       onCommandExecuted: (cmd) => addCommand(cmd),
-      getSuggestion: (prefix) => findMatch(prefix),
-      renderGhostText: (text) => ghostRenderer.setGhostText(text),
+      getSuggestion: () => null,
+      renderGhostText: () => {},
       requestCompletions,
       dismissCompletions: () => setCompletionItems([])
     })
