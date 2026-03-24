@@ -5,9 +5,9 @@ import { HttpTile } from '../tiles/HttpTile'
 import { PostgresTile } from '../tiles/PostgresTile'
 import { BrowserTile } from '../tiles/BrowserTile'
 import { FileViewerTile } from '../tiles/FileViewerTile'
-import { MoreHorizontal, Pencil, Copy, RotateCcw, ClipboardCopy, Link, X, Minus, Plus } from 'lucide-react'
+import { MoreHorizontal, Pencil, Copy, RotateCcw, ClipboardCopy, Link, X, Minus, Plus, Layers } from 'lucide-react'
 import { TileKindIcon } from '../tiles/TileKindIcon'
-import type { Tile, TileKind } from '../types'
+import type { Tile, TileKind, Section } from '../types'
 
 const TITLE_BAR_H = 36
 const TAB_BAR_H = 32
@@ -20,8 +20,43 @@ function tileCreatedAt(tile: Tile): number {
 
 import { tabOrderCache } from './tabOrderCache'
 
+/** Check if a tile's center is inside a section */
+function tileInSection(t: Tile, sec: Section): boolean {
+  const cx = t.x + t.w / 2
+  const cy = t.y + t.h / 2
+  return cx >= sec.x && cx <= sec.x + sec.w && cy >= sec.y && cy <= sec.y + sec.h
+}
+
+/** A focus entry is either a single tile or a group (section with its tiles) */
+type FocusEntry =
+  | { type: 'single'; id: string; tile: Tile }
+  | { type: 'group'; id: string; section: Section; tiles: Tile[] }
+
+function buildFocusEntries(tiles: Tile[], sections: Section[]): FocusEntry[] {
+  const entries: FocusEntry[] = []
+  const assignedIds = new Set<string>()
+
+  // For each section, collect its tiles into a group entry
+  for (const sec of sections) {
+    const contained = tiles.filter((t) => tileInSection(t, sec))
+    if (contained.length === 0) continue
+    for (const t of contained) assignedIds.add(t.id)
+    entries.push({ type: 'group', id: `group-${sec.id}`, section: sec, tiles: contained })
+  }
+
+  // Ungrouped tiles as individual entries
+  for (const t of tiles) {
+    if (!assignedIds.has(t.id)) {
+      entries.push({ type: 'single', id: t.id, tile: t })
+    }
+  }
+
+  return entries
+}
+
 export function FocusView() {
   const tiles = useStore((s) => s.tiles)
+  const sections = useStore((s) => s.sections)
   const focusedId = useStore((s) => s.focusedId)
   const exitedTileIds = useStore((s) => s.exitedTileIds)
   const { focusTile, spawnTile } = useStore()
@@ -87,22 +122,30 @@ export function FocusView() {
 
   const sorted = tabOrder.map((id) => tiles.find((t) => t.id === id)!).filter(Boolean)
 
+  // Build focus entries (groups + singles)
+  const focusEntries = buildFocusEntries(sorted, sections)
+
   const cardW = Math.round(containerW * 0.7)
   const cardH = containerH - TAB_BAR_H
 
-  const focusedIdx = sorted.findIndex((t) => t.id === focusedId)
+  // Find which entry is currently focused (contains the focusedId)
+  const focusedEntryIdx = focusEntries.findIndex((e) =>
+    e.type === 'single' ? e.tile.id === focusedId : e.tiles.some((t) => t.id === focusedId)
+  )
 
   const goNext = useCallback(() => {
-    if (sorted.length < 2) return
-    const next = (focusedIdx + 1) % sorted.length
-    focusTile(sorted[next].id)
-  }, [sorted, focusedIdx, focusTile])
+    if (focusEntries.length < 2) return
+    const next = (focusedEntryIdx + 1) % focusEntries.length
+    const entry = focusEntries[next]
+    focusTile(entry.type === 'single' ? entry.tile.id : entry.tiles[0].id)
+  }, [focusEntries, focusedEntryIdx, focusTile])
 
   const goPrev = useCallback(() => {
-    if (sorted.length < 2) return
-    const prev = (focusedIdx - 1 + sorted.length) % sorted.length
-    focusTile(sorted[prev].id)
-  }, [sorted, focusedIdx, focusTile])
+    if (focusEntries.length < 2) return
+    const prev = (focusedEntryIdx - 1 + focusEntries.length) % focusEntries.length
+    const entry = focusEntries[prev]
+    focusTile(entry.type === 'single' ? entry.tile.id : entry.tiles[0].id)
+  }, [focusEntries, focusedEntryIdx, focusTile])
 
   // Allow trackpad horizontal scroll — convert vertical wheel to horizontal scroll
   useEffect(() => {
@@ -174,8 +217,28 @@ export function FocusView() {
           className="flex-1 flex items-center gap-0.5 px-2 overflow-x-auto min-w-0"
           style={{ scrollbarWidth: 'none', overscrollBehavior: 'contain' }}
         >
-          {sorted.map((tile) => {
-            const isFocused = tile.id === focusedId
+          {focusEntries.map((entry, idx) => {
+            const isActive = idx === focusedEntryIdx
+
+            if (entry.type === 'group') {
+              return (
+                <button
+                  key={entry.id}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-pointer border transition-colors ${
+                    isActive
+                      ? 'border-white/10 text-text-primary'
+                      : 'border-transparent text-text-muted hover:text-text-secondary'
+                  }`}
+                  onClick={() => focusTile(entry.tiles[0].id)}
+                >
+                  <Layers size={11} className={isActive ? 'text-blue-400' : 'text-text-muted'} />
+                  <span className="truncate max-w-[120px]">{entry.section.name}</span>
+                  <span className="text-[9px] text-text-muted/60">{entry.tiles.length}</span>
+                </button>
+              )
+            }
+
+            const tile = entry.tile
             const isExited = exitedTileIds.includes(tile.id)
             const isDragging = dragTabId === tile.id
             const isDropTarget = dropTargetId === tile.id && dragTabId !== tile.id
@@ -188,13 +251,13 @@ export function FocusView() {
                 onDrop={(e) => handleDrop(e, tile.id)}
                 onDragEnd={handleDragEnd}
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] shrink-0 cursor-grab active:cursor-grabbing border transition-colors ${
-                  isFocused
+                  isActive
                     ? 'border-white/10 text-text-primary'
                     : 'border-transparent text-text-muted hover:text-text-secondary'
                 } ${isDragging ? 'opacity-40' : ''} ${isDropTarget ? '!border-white/40 scale-105' : ''}`}
                 onClick={() => focusTile(tile.id)}
               >
-                <TileKindIcon kind={tile.kind} active={isFocused} exited={isExited} size={11} />
+                <TileKindIcon kind={tile.kind} active={isActive} exited={isExited} size={11} />
                 <span className="truncate max-w-[100px]">{tile.name}</span>
               </button>
             )
@@ -244,7 +307,7 @@ export function FocusView() {
       {/* Content area with cards */}
       <div className="flex-1 min-h-0 relative">
         {/* Left nav button */}
-        {sorted.length > 1 && (
+        {focusEntries.length > 1 && (
           <button
             className="absolute left-3 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-lg bg-surface/80 backdrop-blur border border-border flex items-center justify-center cursor-pointer hover:bg-surface transition-colors"
             onClick={goPrev}
@@ -256,7 +319,7 @@ export function FocusView() {
         )}
 
         {/* Right nav button */}
-        {sorted.length > 1 && (
+        {focusEntries.length > 1 && (
           <button
             className="absolute right-3 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-lg bg-surface/80 backdrop-blur border border-border flex items-center justify-center cursor-pointer hover:bg-surface transition-colors"
             onClick={goNext}
@@ -277,14 +340,27 @@ export function FocusView() {
             {/* Left padding to center first card */}
             <div style={{ width: Math.round(containerW * 0.15) }} className="shrink-0" />
 
-            {sorted.map((tile) => (
-              <FocusCard
-                key={tile.id}
-                tile={tile}
-                cardW={cardW}
-                cardH={cardH}
-              />
-            ))}
+            {focusEntries.map((entry) => {
+              if (entry.type === 'group') {
+                return (
+                  <GroupFocusCard
+                    key={entry.id}
+                    section={entry.section}
+                    tiles={entry.tiles}
+                    cardW={cardW}
+                    cardH={cardH}
+                  />
+                )
+              }
+              return (
+                <FocusCard
+                  key={entry.id}
+                  tile={entry.tile}
+                  cardW={cardW}
+                  cardH={cardH}
+                />
+              )
+            })}
 
             {/* Right padding to allow last card to scroll to center */}
             <div style={{ width: Math.round(containerW * 0.15) }} className="shrink-0" />
@@ -295,7 +371,120 @@ export function FocusView() {
   )
 }
 
-// ── Focus card ────────────────────────────────────────────────────────────────
+// ── Group focus card (section with multiple tiles) ─────────────────────────────
+
+function GroupFocusCard({ section, tiles, cardW, cardH }: { section: Section; tiles: Tile[]; cardW: number; cardH: number }) {
+  const cardRef = useRef<HTMLDivElement>(null)
+  const focusedId = useStore((s) => s.focusedId)
+  const isFocused = tiles.some((t) => t.id === focusedId)
+  const { focusTile } = useStore()
+
+  // Scroll into view when any tile in this group becomes focused
+  useEffect(() => {
+    if (isFocused && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+    }
+  }, [isFocused])
+
+  // Compute grid layout: try to make it as square as possible
+  const count = tiles.length
+  const cols = Math.ceil(Math.sqrt(count))
+  const rows = Math.ceil(count / cols)
+
+  const SECTION_LABEL_H = 28
+  const GAP = 4
+  const innerW = cardW - 16 // padding
+  const innerH = cardH - SECTION_LABEL_H - 16
+  const cellW = Math.floor((innerW - GAP * (cols - 1)) / cols)
+  const cellH = Math.floor((innerH - GAP * (rows - 1)) / rows)
+
+  return (
+    <div
+      ref={cardRef}
+      className="shrink-0 flex flex-col"
+      style={{
+        width: cardW,
+        height: cardH,
+        scrollSnapAlign: 'center',
+        padding: '8px 4px'
+      }}
+    >
+      <div className="flex-1 rounded-xl overflow-hidden flex flex-col bg-tile border border-border">
+        {/* Section label */}
+        <div
+          className="flex items-center gap-2 px-3 shrink-0"
+          style={{ height: SECTION_LABEL_H, userSelect: 'none' }}
+        >
+          <Layers size={12} className="text-blue-400" />
+          <span className="text-xs font-medium text-text-secondary truncate">{section.name}</span>
+          <span className="text-[9px] text-text-muted/60 ml-auto">{count} tiles</span>
+        </div>
+
+        {/* Grid of tiles */}
+        <div className="flex-1 min-h-0 p-2" style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: GAP }}>
+          {tiles.map((tile) => (
+            <GroupTileCell
+              key={tile.id}
+              tile={tile}
+              cellW={cellW}
+              cellH={cellH}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** A single tile cell inside a group card */
+function GroupTileCell({ tile, cellW, cellH }: { tile: Tile; cellW: number; cellH: number }) {
+  const focusedId = useStore((s) => s.focusedId)
+  const exitedTileIds = useStore((s) => s.exitedTileIds)
+  const { focusTile } = useStore()
+  const isFocused = focusedId === tile.id
+  const isExited = exitedTileIds.includes(tile.id)
+
+  const CELL_TITLE_H = 28
+  const contentH = cellH - CELL_TITLE_H
+
+  const borderClass = isExited
+    ? 'border-red-500/40'
+    : isFocused
+      ? 'border-blue-400/40'
+      : 'border-border/50'
+
+  return (
+    <div
+      className={`flex flex-col rounded-lg overflow-hidden border ${borderClass} bg-surface/50`}
+      style={{ minHeight: 0 }}
+      onMouseDown={() => focusTile(tile.id)}
+    >
+      {/* Mini title bar */}
+      <div
+        className="flex items-center gap-1.5 px-2 shrink-0"
+        style={{ height: CELL_TITLE_H, userSelect: 'none' }}
+      >
+        <TileKindIcon kind={tile.kind} active={isFocused} exited={isExited} size={11} />
+        <span className="flex-1 min-w-0 truncate text-[10px] font-medium text-text-muted">
+          {tile.name}
+        </span>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {tile.kind === 'terminal' && (
+          <TerminalTile tileId={tile.id} overrideW={cellW} overrideH={contentH > 0 ? contentH : 100} />
+        )}
+        {tile.kind === 'http' && <HttpTile tileId={tile.id} />}
+        {tile.kind === 'postgres' && <PostgresTile tileId={tile.id} />}
+        {tile.kind === 'browser' && <BrowserTile tileId={tile.id} />}
+        {tile.kind === 'file' && <FileViewerTile tileId={tile.id} />}
+      </div>
+    </div>
+  )
+}
+
+// ── Focus card (single tile) ──────────────────────────────────────────────────
 
 function FocusCard({ tile, cardW, cardH }: { tile: Tile; cardW: number; cardH: number }) {
   const cardRef = useRef<HTMLDivElement>(null)
