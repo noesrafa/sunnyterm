@@ -1,7 +1,7 @@
 {
   "name": "sunnyterm",
   "productName": "SunnyTerm",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Infinite canvas terminal emulator",
   "main": "out/main/index.js",
   "scripts": {
