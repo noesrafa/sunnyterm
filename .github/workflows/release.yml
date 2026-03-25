@@ -28,22 +28,28 @@ jobs:
         run: npm run build
 
       - name: Package (${{ matrix.arch }})
-        run: npx electron-builder --mac --${{ matrix.arch }}
+        run: npx electron-builder --mac --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rename DMG
         run: |
+          ls -la release/*.dmg
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            mv release/*.dmg release/SunnyTerm-arm64.dmg
+            mv release/*-arm64.dmg release/SunnyTerm-arm64.dmg
           else
-            mv release/*.dmg release/SunnyTerm-x64.dmg
+            # x64 DMG has no arch suffix in the filename
+            for f in release/*.dmg; do
+              case "$f" in *-arm64.dmg) continue;; esac
+              mv "$f" release/SunnyTerm-x64.dmg
+              break
+            done
           fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: dmg-${{ matrix.arch }}
-          path: release/SunnyTerm-*.dmg
+          path: release/SunnyTerm-${{ matrix.arch }}.dmg
 
   release:
     needs: build-mac
