@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import { toast } from 'sonner'
-import type { Tile, TileKind, CanvasAction, DragState, Section, WorkspaceLayout, PersistedAppState, ViewMode } from '../types'
+import type { Tile, TileKind, CanvasAction, DragState, Section, WorkspaceLayout, PersistedAppState, ViewMode, TerminalShortcut } from '../types'
 import { THEMES, THEME_ORDER, type ThemeName } from '../lib/themes'
 const GRID_SNAP = 12 // half of GRID_SPACING (24)
 const TILE_MIN_W = 300
@@ -113,6 +113,8 @@ export interface CanvasStore {
   /** Pending curl data to populate a newly spawned HTTP tile */
   pendingCurlData: Record<string, { method: string; url: string; headers: { key: string; value: string }[]; body: string }>
 
+  // Terminal shortcuts (global, persisted)
+  terminalShortcuts: TerminalShortcut[]
 
   // ── Actions ────────────────────────────────────────────────────────────────
   setZoom: (zoom: number) => void
@@ -165,6 +167,7 @@ export interface CanvasStore {
   setViewMode: (mode: ViewMode) => void
   toggleShortcuts: () => void
   toggleConfirmClear: () => void
+  setTerminalShortcuts: (shortcuts: TerminalShortcut[]) => void
   clearCanvas: () => void
   triggerSavedToast: () => void
 
@@ -186,6 +189,27 @@ export interface CanvasStore {
   consumeCurlData: (tileId: string) => { method: string; url: string; headers: { key: string; value: string }[]; body: string } | null
   /** Init store from persisted state (called once on app start). */
   initFromPersisted: () => Promise<void>
+}
+
+// ─── Terminal shortcuts helpers ───────────────────────────────────────────────
+
+const SHORTCUTS_STORAGE_KEY = 'sunnyterm-terminal-shortcuts'
+
+const DEFAULT_TERMINAL_SHORTCUTS: TerminalShortcut[] = [
+  { label: 'Claude', command: 'claude --dangerously-skip-permissions' },
+  { label: 'Clear', command: 'clear' }
+]
+
+function loadTerminalShortcuts(): TerminalShortcut[] {
+  try {
+    const raw = localStorage.getItem(SHORTCUTS_STORAGE_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return DEFAULT_TERMINAL_SHORTCUTS
+}
+
+function persistTerminalShortcuts(shortcuts: TerminalShortcut[]) {
+  localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(shortcuts))
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -217,6 +241,7 @@ export const useStore = create<CanvasStore>()(
     activeWorkspace: null,
     tileCwds: {},
     pendingCurlData: {},
+    terminalShortcuts: loadTerminalShortcuts(),
 
     // ── Viewport ─────────────────────────────────────────────────────────────
 
@@ -659,6 +684,10 @@ export const useStore = create<CanvasStore>()(
     toggleSearch: () => set((s) => ({ searchOpen: !s.searchOpen })),
     setSearchQuery: (searchQuery) => set({ searchQuery }),
     toggleShortcuts: () => set((s) => ({ showShortcuts: !s.showShortcuts })),
+    setTerminalShortcuts: (shortcuts) => {
+      persistTerminalShortcuts(shortcuts)
+      set({ terminalShortcuts: shortcuts })
+    },
     toggleConfirmClear: () => set((s) => ({ showConfirmClear: !s.showConfirmClear })),
     clearCanvas: () => {
       const { tiles } = get()

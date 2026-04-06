@@ -81,6 +81,13 @@ export interface WorkspaceLayout {
   savedAt?: string
 }
 
+// ─── Terminal shortcuts ───────────────────────────────────────────────────────
+
+export interface TerminalShortcut {
+  label: string
+  command: string
+}
+
 // ─── App state (persisted) ────────────────────────────────────────────────────
 
 export type ViewMode = 'canvas' | 'focus'

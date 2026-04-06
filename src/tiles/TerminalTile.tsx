@@ -133,8 +133,10 @@ export function TerminalTile({ tileId, overrideW, overrideH }: Props) {
     })
 
     const fitAddon = new FitAddon()
-    const webLinksAddon = new WebLinksAddon((_event, uri) => {
-      window.open(uri, '_blank')
+    const webLinksAddon = new WebLinksAddon((event, uri) => {
+      if (event.ctrlKey || event.metaKey) {
+        window.open(uri, '_blank')
+      }
     })
     const searchAddon = new SearchAddon()
 

@@ -1,6 +1,25 @@
 import * as nodePty from 'node-pty'
 import { execSync } from 'child_process'
 
+// When launched from /Applications on macOS, Electron's process.env.PATH is a
+// minimal system PATH that doesn't include user shell paths (nvm, brew, etc.).
+// Fix by reading the real PATH from the user's login+interactive shell once.
+function fixMacOSPath(): void {
+  if (process.platform !== 'darwin') return
+  try {
+    const shell = process.env.SHELL || '/bin/zsh'
+    const realPath = execSync(`${shell} -l -i -c 'echo $PATH' 2>/dev/null`, {
+      encoding: 'utf8',
+      timeout: 5000
+    }).trim()
+    if (realPath) process.env.PATH = realPath
+  } catch {
+    // ignore — fall back to whatever PATH we already have
+  }
+}
+
+fixMacOSPath()
+
 interface PtyEntry {
   pty: nodePty.IPty
   pid: number
